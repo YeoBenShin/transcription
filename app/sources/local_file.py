@@ -1,0 +1,21 @@
+"""Source: audio or video file on disk. Transcribe with Whisper."""
+
+from pathlib import Path
+from typing import Optional
+
+from app.models import Options, Transcript
+from app.stages.transcribe import transcribe
+
+
+class LocalFileSource:
+    name = "local file"
+
+    def matches(self, raw: str) -> bool:
+        return Path(raw).expanduser().is_file()
+
+    def get_transcript(self, raw: str, options: Options) -> Optional[Transcript]:
+        path = Path(raw).expanduser()
+        lines = transcribe(path, options.model)
+        if not lines:
+            return None
+        return Transcript(path.stem, lines, origin="faster-whisper")
