@@ -1,8 +1,14 @@
 __pycache__
+.playwright-mcp/
+.DS_Store
 .venv
 .env
+
+# output transcription files
 out/*
 
+# audio files to be transcribed
 to-be-transcribe/*
+
+# wrapper script for running the app
 bin/*
-.playwright-mcp/
