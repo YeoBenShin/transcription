@@ -102,7 +102,7 @@ cd /d "%~dp0.." || exit /b 1
 - `chunk_NNN_HHMMSS-HHMMSS.txt`: one file per time window, with a header line
 - `full.txt`: all lines
 
-`name` is the YouTube video title, the Spotify episode title, or the file name without its extension. Characters not allowed in file names are removed, and the name is cut to 120 characters. If the title cannot be fetched, `name` is the video or episode id. A new run removes old chunk files from that folder.
+`name` is `<title> [<id>]` for YouTube and Spotify (for example `Creating a C HTTP Server [JT9JI_SMHk4]`), or the file name without its extension for a local file. Characters not allowed in file names are removed from the title, and the title is cut to 120 characters. If the title cannot be fetched, `name` is only the video or episode id. A new run removes old chunk files from that folder.
 
 ## Moving parts
 

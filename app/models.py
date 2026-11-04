@@ -25,8 +25,9 @@ class Transcript:
 
     @property
     def folder_name(self) -> str:
-        """Safe folder name from the title. The source_id if there is no usable title."""
-        return safe_name(self.title or "") or self.source_id
+        """'<safe title> [<source_id>]'. Only the source_id if there is no usable title."""
+        name = safe_name(self.title or "")
+        return f"{name} [{self.source_id}]" if name else self.source_id
 
 
 @dataclass

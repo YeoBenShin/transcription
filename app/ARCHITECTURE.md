@@ -17,7 +17,7 @@
 
 - `route()` uses the first match. Thus the order in `SOURCES` is important when two sources can match the same string.
 - `pipeline.run` raises exceptions (`UnsupportedInput`, `NoTranscript`). It does not call `sys.exit`. Thus other code can call it, and only the CLI converts errors to exit codes.
-- The output folder is `Transcript.folder_name`: the sanitized title, else `source_id`. A title is easier to find in `out/` than an id. Sanitizing removes characters that are not allowed in file names on Windows, so the same output works on all platforms. Two inputs with the same title write to the same folder; the second run replaces the first.
+- The output folder is `Transcript.folder_name`: `<sanitized title> [<source_id>]`, else only `source_id`. A title is easier to find in `out/` than an id. The id keeps two inputs with the same title in different folders, and a second run of the same input writes to the same folder. Sanitizing removes characters that are not allowed in file names on Windows, so the same output works on all platforms.
 - `Transcript.origin` records how the lines were made (captions or Whisper). Captions and Whisper output have different quality, so later analysis must be able to tell them apart.
 - `batch.py` is a separate entry point, not a flag on `cli.py`. A folder of files and one input string have different arguments and output, and `pipeline.run` stays unchanged.
 - `batch.py` catches every exception per file. One corrupt file must not stop the rest of the batch.
