@@ -13,7 +13,7 @@ def main(argv=None) -> int:
         prog="python -m app",
         description="Any supported input -> chunked transcript .txt files.",
     )
-    parser.add_argument("input", help="full YouTube video URL, or path to an audio/video file")
+    parser.add_argument("input", help="full YouTube video URL, Spotify episode URL, or path to an audio/video file")
     parser.add_argument("--chunk-minutes", type=float, default=4.0)
     parser.add_argument("--outdir", type=Path, default=Path("out"))
     parser.add_argument("--model", default="small", help="faster-whisper model size")

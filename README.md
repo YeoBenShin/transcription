@@ -16,7 +16,7 @@ Supported `<input>`:
 | Input | Example | What happens |
 |---|---|---|
 | Full YouTube video URL, copied from the address bar | `'https://www.youtube.com/watch?v=JT9JI_SMHk4'`, `https://www.youtube.com/shorts/TD3_Na5fmIw` | YouTube captions. If there are none: download the audio, then transcribe with Whisper |
-| Spotify podcast episode URL | `https://open.spotify.com/episode/22EJxI0zfZIcPiLwfBfhls` | Find the show's public RSS feed. Use the feed's `podcast:transcript` if it has one. If not: download the feed's mp3, then transcribe with Whisper |
+| Spotify podcast episode URL | `'https://open.spotify.com/episode/22EJxI0zfZIcPiLwfBfhls'` | Find the show's public RSS feed. Use the feed's `podcast:transcript` if it has one. If not: download the feed's mp3, then transcribe with Whisper |
 | Local audio/video file | `~/calls/2026-11-02.m4a` | Transcribe with Whisper |
 
 Spotify-only (exclusive) episodes have no public RSS feed. They fail with `no transcript could be produced`.

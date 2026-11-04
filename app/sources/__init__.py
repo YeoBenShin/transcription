@@ -4,9 +4,11 @@ from typing import List
 
 from app.sources.base import Source
 from app.sources.local_file import LocalFileSource
+from app.sources.spotify import SpotifySource
 from app.sources.youtube import YouTubeSource
 
 SOURCES: List[Source] = [
     LocalFileSource(),
     YouTubeSource(),
+    SpotifySource(),
 ]

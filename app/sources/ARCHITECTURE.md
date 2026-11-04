@@ -13,6 +13,7 @@ Each source implements the `Source` protocol in `base.py`:
 |---|---|---|
 | `LocalFileSource` | path to a file that exists | transcribe |
 | `YouTubeSource` | full URL that starts with `https://www.youtube.` or `https://www.youtu.be`, with the 11-character id after the last `=` or `/` | captions; if none: download, then transcribe |
+| `SpotifySource` | `https://open.spotify.com/episode/<22-char id>`, optional `intl-xx/` and query string | spotify_episode, podcast_feed; then feed_transcript if the item has a timestamped transcript; else `http.download_file` of the enclosure, then transcribe |
 
 To add a source: make a module with a class that has the 3 members above, then add an instance to `SOURCES`.
 
@@ -22,4 +23,7 @@ To add a source: make a module with a class that has the 3 members above, then a
 - The YouTube source accepts only the full URL copied from the browser address bar (`/watch?v=ID` or `/shorts/ID`). Both forms end with the id, so the id is the text after the last `=` or `/`. This replaces a set of regexes for many URL forms, which was hard to read. A bare id and URLs without `https://www.` are not accepted.
 - The host name check (`youtube` or `youtu`) stops a non-YouTube URL that ends in 11 characters from going to the YouTube source.
 - `matches` must not do network calls. Routing must be fast, and it must give the same result offline.
-- The YouTube source downloads audio into a temporary folder that it deletes after transcription. Only the text output is kept.
+- Spotify does not give the audio or a transcript without a login. Most shows on Spotify also publish a public RSS feed, so the Spotify source uses Spotify only for the episode title and show name, and gets everything else from the feed.
+- The Spotify source accepts episode URLs only. A show URL does not identify one episode.
+- The Spotify source tries the feed transcript before Whisper, for the same reason as YouTube captions: it is free and fast, and the publisher made it from the real audio.
+- The YouTube and Spotify sources download audio into a temporary folder that they delete after transcription. Only the text output is kept.

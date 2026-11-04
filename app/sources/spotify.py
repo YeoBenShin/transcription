@@ -1,0 +1,60 @@
+"""Source: Spotify podcast episode URL. Feed transcript first, then feed audio + Whisper."""
+
+import re
+import tempfile
+from pathlib import Path
+from typing import Optional
+
+import requests
+
+from app.models import Options, Transcript
+from app.stages.feed_transcript import fetch_feed_transcript, pick_transcript
+from app.stages.http import download_file
+from app.stages.podcast_feed import find_feed_episode
+from app.stages.spotify_episode import fetch_spotify_episode
+from app.stages.transcribe import transcribe
+
+_URL = re.compile(r"https://open\.spotify\.com/(?:intl-[a-z-]+/)?episode/([0-9A-Za-z]{22})(?:[?#].*)?")
+
+
+def parse_episode_id(raw: str) -> Optional[str]:
+    """Return the episode id of an https://open.spotify.com/episode/<id> URL, or None."""
+    match = _URL.fullmatch(raw.strip())
+    return match.group(1) if match else None
+
+
+class SpotifySource:
+    name = "spotify episode"
+
+    def matches(self, raw: str) -> bool:
+        return parse_episode_id(raw) is not None
+
+    def get_transcript(self, raw: str, options: Options) -> Optional[Transcript]:
+        episode_id = parse_episode_id(raw)
+        assert episode_id is not None
+
+        try:
+            spotify = fetch_spotify_episode(episode_id)
+            episode = find_feed_episode(spotify.show, spotify.title, spotify.released)
+        except (requests.RequestException, RuntimeError, KeyError, ValueError) as error:
+            print(f"episode lookup failed ({type(error).__name__}: {error})")
+            return None
+        if episode is None:
+            return None
+
+        link = pick_transcript(episode.transcripts)
+        if link is not None:
+            lines = fetch_feed_transcript(link)
+            if lines:
+                return Transcript(episode_id, lines, origin=f"feed transcript ({link.mime_type})")
+
+        if not episode.enclosure_url:
+            print("feed item has no audio enclosure")
+            return None
+        print("falling back to audio")
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = download_file(episode.enclosure_url, Path(tmp), episode_id)
+            lines = transcribe(audio, options.model)
+        if not lines:
+            return None
+        return Transcript(episode_id, lines, origin="faster-whisper")
