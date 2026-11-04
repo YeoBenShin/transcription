@@ -2,3 +2,5 @@ __pycache__
 .venv
 out/*
 
+to-be-transcribe/*
+bin/*

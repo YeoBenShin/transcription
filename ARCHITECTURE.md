@@ -3,10 +3,10 @@
 ## How it works
 
 ```
-input string
-   │
-   ▼
-cli.py ──► pipeline.run(raw, Options)
+input string                 to-be-transcribe/*.m4a ...
+   │                                 │
+   ▼                                 ▼
+cli.py ──► pipeline.run(raw, Options) ◄── batch.py (one call per file)
               │
               ├─ route(raw): first source in SOURCES with matches(raw) == True
               │
@@ -27,7 +27,7 @@ Details: `app/ARCHITECTURE.md`, `app/sources/ARCHITECTURE.md`, `app/stages/ARCHI
 
 ### One interface, routing by input
 - The user gives one string. The pipeline finds the input type, so the user does not need to select a subcommand per platform.
-- To add a new input type (for example a podcast RSS feed or Spotify), add one source module and register it in `SOURCES`. The CLI and the later stages do not change.
+- To add a new input type (for example a plain podcast RSS feed), add one source module and register it in `SOURCES`. The CLI and the later stages do not change.
 
 ### Sources orchestrate, stages are reusable
 - Fallback logic (captions, then audio, then Whisper) belongs to the source, because each input type has a different fallback order.
