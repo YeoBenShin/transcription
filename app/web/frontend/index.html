@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transcription</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main>
+  <h1>Transcription</h1>
+  <p class="sub">YouTube video or Spotify episode URL. Output is written to the same folder as the CLI.</p>
+  <form id="form">
+    <input id="url" type="url" placeholder="https://www.youtube.com/watch?v=..." required autofocus>
+    <button type="submit">Transcribe</button>
+    <div class="opts">
+      <label>Chunk minutes <input id="chunk" type="number" min="0.1" step="any" value="4"></label>
+      <label>Whisper model
+        <select id="model">
+          <option>tiny</option><option>base</option><option selected>small</option><option>medium</option><option>large-v3</option>
+        </select>
+      </label>
+    </div>
+  </form>
+  <div id="error"></div>
+  <section id="jobs"></section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+:root { --bg:#fafafa; --fg:#1a1a1a; --muted:#666; --card:#fff; --line:#ddd; --accent:#2457d6; --ok:#1d7a3a; --bad:#b3261e; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#141414; --fg:#eee; --muted:#999; --card:#1e1e1e; --line:#333; --accent:#7aa2ff; --ok:#5cc47f; --bad:#ff7a70; }
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
+main { max-width: 860px; margin: 0 auto; padding: 32px 16px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+p.sub { color: var(--muted); margin: 0 0 20px; }
+form { display:grid; grid-template-columns: 1fr auto; gap: 8px; }
+.opts { grid-column: 1 / -1; display:flex; gap:16px; flex-wrap:wrap; color:var(--muted); font-size:13px; }
+.opts label { display:flex; gap:6px; align-items:center; }
+input, select, button { font: inherit; padding: 8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); }
+.opts input, .opts select { padding: 4px 6px; width: 90px; }
+button { background: var(--accent); color:#fff; border-color: var(--accent); cursor:pointer; }
+#error { color: var(--bad); min-height: 1.5em; margin: 6px 0 12px; }
+.job { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:12px; }
+.job header { display:flex; gap:10px; align-items:baseline; }
+.url { flex:1; overflow-wrap:anywhere; font-weight:500; }
+.status { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+.status.done { color: var(--ok); } .status.failed { color: var(--bad); }
+details { margin-top: 8px; }
+summary { cursor:pointer; color:var(--muted); font-size:13px; }
+pre { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px; max-height:260px; overflow:auto; font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+ul.files { list-style:none; padding:0; margin:8px 0 0; font-size:13px; }
+ul.files li { display:flex; gap:10px; padding:2px 0; }
+ul.files a { color: var(--accent); }
+ul.files .name { flex:1; font-family: ui-monospace, monospace; overflow-wrap:anywhere; }
