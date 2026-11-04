@@ -11,7 +11,7 @@ from typing import List, Optional
 import requests
 from defusedxml import ElementTree
 
-from app.stages.http import TIMEOUT, USER_AGENT
+from app.stages.common.http import TIMEOUT, USER_AGENT
 
 APPLE_SEARCH = "https://itunes.apple.com/search"
 MAX_FEEDS = 5

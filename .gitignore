@@ -5,3 +5,4 @@ out/*
 
 to-be-transcribe/*
 bin/*
+.playwright-mcp/

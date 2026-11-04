@@ -7,8 +7,8 @@ from typing import List, Optional
 from app.models import Options, Transcript
 from app.sources import SOURCES
 from app.sources.base import Source
-from app.stages.chunk import chunk
-from app.stages.write import write_chunks
+from app.stages.common.chunk import chunk
+from app.stages.common.write import write_chunks
 
 
 class UnsupportedInput(ValueError):
@@ -45,5 +45,5 @@ def run(raw: str, options: Options) -> Result:
         raise NoTranscript(f"no transcript could be produced for {raw!r}")
 
     chunks = chunk(transcript.lines, options.chunk_seconds)
-    paths = write_chunks(chunks, transcript.source_id, options.chunk_seconds, options.outdir)
+    paths = write_chunks(chunks, transcript.folder_name, options.chunk_seconds, options.outdir)
     return Result(transcript, len(chunks), paths)

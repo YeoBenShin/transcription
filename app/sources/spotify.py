@@ -8,11 +8,11 @@ from typing import Optional
 import requests
 
 from app.models import Options, Transcript
-from app.stages.feed_transcript import fetch_feed_transcript, pick_transcript
-from app.stages.http import download_file
-from app.stages.podcast_feed import find_feed_episode
-from app.stages.spotify_episode import fetch_spotify_episode
-from app.stages.transcribe import transcribe
+from app.stages.spotify.feed_transcript import fetch_feed_transcript, pick_transcript
+from app.stages.common.http import download_file
+from app.stages.spotify.podcast_feed import find_feed_episode
+from app.stages.spotify.spotify_episode import fetch_spotify_episode
+from app.stages.common.transcribe import transcribe
 
 _URL = re.compile(r"https://open\.spotify\.com/(?:intl-[a-z-]+/)?episode/([0-9A-Za-z]{22})(?:[?#].*)?")
 
@@ -46,7 +46,9 @@ class SpotifySource:
         if link is not None:
             lines = fetch_feed_transcript(link)
             if lines:
-                return Transcript(episode_id, lines, origin=f"feed transcript ({link.mime_type})")
+                return Transcript(
+                    episode_id, lines, origin=f"feed transcript ({link.mime_type})", title=spotify.title
+                )
 
         if not episode.enclosure_url:
             print("feed item has no audio enclosure")
@@ -57,4 +59,4 @@ class SpotifySource:
             lines = transcribe(audio, options.model)
         if not lines:
             return None
-        return Transcript(episode_id, lines, origin="faster-whisper")
+        return Transcript(episode_id, lines, origin="faster-whisper", title=spotify.title)

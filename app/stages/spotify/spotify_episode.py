@@ -8,7 +8,7 @@ from typing import Optional
 
 import requests
 
-from app.stages.http import USER_AGENT_BROWSER, TIMEOUT
+from app.stages.common.http import USER_AGENT_BROWSER, TIMEOUT
 
 _NEXT_DATA = re.compile(
     r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S

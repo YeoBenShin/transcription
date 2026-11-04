@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Optional
 
 from app.models import Options, Transcript
-from app.stages.captions import fetch_captions
-from app.stages.download import download_audio
-from app.stages.transcribe import transcribe
+from app.stages.youtube.captions import fetch_captions
+from app.stages.youtube.download import download_audio
+from app.stages.common.transcribe import transcribe
+from app.stages.youtube.video_title import fetch_video_title
 
 _URL_PREFIX = "https://www."
 _HOST_NAMES = ("youtube", "youtu")
@@ -41,10 +42,11 @@ class YouTubeSource:
     def get_transcript(self, raw: str, options: Options) -> Optional[Transcript]:
         video_id = parse_video_id(raw)
         assert video_id is not None
+        title = fetch_video_title(video_id)
 
         lines = fetch_captions(video_id)
         if lines:
-            return Transcript(video_id, lines, origin="youtube captions")
+            return Transcript(video_id, lines, origin="youtube captions", title=title)
 
         print("falling back to audio")
         with tempfile.TemporaryDirectory() as tmp:
@@ -52,4 +54,4 @@ class YouTubeSource:
             lines = transcribe(audio, options.model)
         if not lines:
             return None
-        return Transcript(video_id, lines, origin="faster-whisper")
+        return Transcript(video_id, lines, origin="faster-whisper", title=title)

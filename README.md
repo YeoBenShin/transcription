@@ -11,6 +11,20 @@ python3.13 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m app <input> [--chunk-minutes 4] [--outdir out] [--model small]
 ```
 
+### Windows setup
+
+From the project folder, in PowerShell:
+
+```powershell
+winget configure -f .config/configuration.winget
+.venv\Scripts\python -m app <input>
+```
+
+- Installs Python 3.13, Visual C++ x64 runtime, Git, Deno. Then creates `.venv` and installs `requirements.txt`.
+- Needs Windows 10 1809+ and winget 1.6+. Accept the UAC prompts.
+- Run it again any time. Installed parts are skipped.
+- Not tested on Windows.
+
 Supported `<input>`:
 
 | Input | Example | What happens |
@@ -68,23 +82,36 @@ cd /d "%~dp0.." || exit /b 1
 - Without the wrapper: `.venv\Scripts\python -m app.batch`.
 - Not tested on Windows.
 
+### Web interface (local)
+
+```sh
+.venv/bin/python -m app.web [--port 8000] [--outdir out]
+```
+
+- Open `http://127.0.0.1:8000`. Paste a YouTube or Spotify episode URL, set chunk minutes and Whisper model, click Transcribe.
+- Each submit runs `python -m app <url> ...` as a subprocess. Output files are the same as the CLI, in the same `--outdir`.
+- Jobs run one at a time. Others wait as `queued`. The page shows the live CLI log and links to view or download each `.txt`.
+- Job list is in memory only. A server restart clears the list, not the files.
+- Listens on `127.0.0.1` only. No authentication.
+
 `--model` is the faster-whisper size (`tiny`, `base`, `small`, `medium`, `large-v3`, ...). It applies only when Whisper runs.
 
 ## Output
 
-`<outdir>/<source_id>/` contains:
+`<outdir>/<name>/` contains:
 - `chunk_NNN_HHMMSS-HHMMSS.txt`: one file per time window, with a header line
 - `full.txt`: all lines
 
-`source_id` is the YouTube video id, the Spotify episode id, or the file name without its extension. A new run removes old chunk files from that folder.
+`name` is the YouTube video title, the Spotify episode title, or the file name without its extension. Characters not allowed in file names are removed, and the name is cut to 120 characters. If the title cannot be fetched, `name` is the video or episode id. A new run removes old chunk files from that folder.
 
 ## Moving parts
 
 - `app/cli.py`: command line for one input. Calls `pipeline.run`.
 - `app/batch.py`: command line for a folder. Calls `pipeline.run` once per file.
+- `app/web/`: local web page. `backend/` runs `python -m app` per URL. `frontend/` is static HTML, CSS, JS.
 - `bin/transcribe-batch`: executable wrapper for `app.batch`.
 - `app/pipeline.py`: picks a source for the input, then runs chunk + write.
 - `app/sources/`: one module per input type. Each one decides which stages to run.
-- `app/stages/`: single-purpose steps (captions, download, Spotify metadata, RSS feed lookup, feed transcript, transcribe, chunk, write).
+- `app/stages/`: single-purpose steps. `youtube/` (title, captions, download) and `spotify/` (Spotify metadata, RSS feed lookup, feed transcript) hold stages for one source; `common/` holds stages for more than one (http, transcribe, chunk, write).
 
 See `ARCHITECTURE.md` in each folder.

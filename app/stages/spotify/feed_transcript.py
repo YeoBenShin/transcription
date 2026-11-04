@@ -6,8 +6,8 @@ from typing import List, Optional
 import requests
 
 from app.models import Line, clean
-from app.stages.http import TIMEOUT, USER_AGENT
-from app.stages.podcast_feed import TranscriptLink
+from app.stages.common.http import TIMEOUT, USER_AGENT
+from app.stages.spotify.podcast_feed import TranscriptLink
 
 # Formats with timestamps, best first. HTML and plain text have no timestamps and are not used.
 _PREFERENCE = {

@@ -10,15 +10,15 @@ cli.py ──► pipeline.run(raw, Options) ◄── batch.py (one call per fil
               │
               ├─ route(raw): first source in SOURCES with matches(raw) == True
               │
-              ├─ source.get_transcript(raw, options) ──► Transcript(source_id, lines, origin)
+              ├─ source.get_transcript(raw, options) ──► Transcript(source_id, lines, origin, title)
               │      (the source calls the acquisition stages it needs)
               │
-              ├─ stages.chunk   (same for all sources)
-              └─ stages.write   (same for all sources)
+              ├─ stages.common.chunk   (same for all sources)
+              └─ stages.common.write   (same for all sources)
 ```
 
 - `sources/` decides *what* to do for an input type.
-- `stages/` does *one* thing each. Stages do not know about sources.
+- `stages/` does *one* thing each, grouped by which source uses it (`youtube/`, `spotify/`, `common/`). Stages do not import sources.
 - Every source produces the same `Transcript` type. Everything after acquisition does not depend on the input type.
 
 Details: `app/ARCHITECTURE.md`, `app/sources/ARCHITECTURE.md`, `app/stages/ARCHITECTURE.md`.

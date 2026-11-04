@@ -7,10 +7,10 @@ from app.models import Line, timestamp
 
 
 def write_chunks(
-    chunks: List[List[Line]], source_id: str, chunk_seconds: float, outdir: Path
+    chunks: List[List[Line]], name: str, chunk_seconds: float, outdir: Path
 ) -> List[Path]:
-    """Write one file per chunk plus full.txt into outdir/source_id. Remove old chunk files first."""
-    directory = outdir / source_id
+    """Write one file per chunk plus full.txt into outdir/name. Remove old chunk files first."""
+    directory = outdir / name
     directory.mkdir(parents=True, exist_ok=True)
     for stale in directory.glob("chunk_*.txt"):
         stale.unlink()
@@ -21,7 +21,7 @@ def write_chunks(
         start, end = index * chunk_seconds, (index + 1) * chunk_seconds
         path = directory / f"chunk_{number:03d}_{timestamp(start)}-{timestamp(end)}.txt".replace(":", "")
         header = (
-            f"# {source_id} chunk {number}/{len(chunks)} "
+            f"# {name} chunk {number}/{len(chunks)} "
             f"[{timestamp(start)} - {timestamp(end)}]\n\n"
         )
         body = "\n".join(f"[{timestamp(l.start)}] {l.text}" for l in lines)

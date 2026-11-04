@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.models import Options, Transcript
-from app.stages.transcribe import transcribe
+from app.stages.common.transcribe import transcribe
 
 
 class LocalFileSource:
