@@ -1,0 +1,76 @@
+# yaml-language-server: $schema=https://aka.ms/configuration-dsc-schema/0.2
+# Installs the Windows machine dependencies for this project and creates .venv.
+# Run from the project folder:  winget configure -f .config/configuration.winget
+properties:
+  configurationVersion: 0.2.0
+  assertions:
+    - resource: Microsoft.Windows.Developer/OsVersion
+      directives:
+        description: Require Windows 10 1809 or later (needed by winget configure)
+        allowPrerelease: true
+      settings:
+        MinVersion: '10.0.17763'
+  resources:
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: python
+      directives:
+        description: Install Python 3.13 (onnxruntime has no wheels for 3.15)
+        allowPrerelease: true
+      settings:
+        id: Python.Python.3.13
+        source: winget
+
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: vcredist
+      directives:
+        description: Install Microsoft Visual C++ 2015-2022 runtime (x64), loaded by ctranslate2, onnxruntime and av
+        allowPrerelease: true
+      settings:
+        id: Microsoft.VCRedist.2015+.x64
+        source: winget
+
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: git
+      directives:
+        description: Install Git
+        allowPrerelease: true
+      settings:
+        id: Git.Git
+        source: winget
+
+    - resource: Microsoft.WinGet.DSC/WinGetPackage
+      id: deno
+      directives:
+        description: Install Deno, the JavaScript runtime yt-dlp uses for YouTube downloads
+        allowPrerelease: true
+      settings:
+        id: DenoLand.Deno
+        source: winget
+
+    - resource: PSDscResources/Script
+      id: venv
+      dependsOn:
+        - python
+        - vcredist
+      directives:
+        description: Create .venv with Python 3.13 and install requirements.txt
+        allowPrerelease: true
+      settings:
+        GetScript: |
+          $root = Resolve-Path (Join-Path '${WinGetConfigRoot}' '..')
+          @{ Result = (Test-Path (Join-Path $root '.venv\Scripts\python.exe')).ToString() }
+        TestScript: |
+          $root = Resolve-Path (Join-Path '${WinGetConfigRoot}' '..')
+          $python = Join-Path $root '.venv\Scripts\python.exe'
+          if (-not (Test-Path $python)) { return $false }
+          & $python -c "import faster_whisper, yt_dlp, youtube_transcript_api" 2>$null
+          return ($LASTEXITCODE -eq 0)
+        SetScript: |
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+          $root = Resolve-Path (Join-Path '${WinGetConfigRoot}' '..')
+          Set-Location $root
+          py -3.13 -m venv .venv
+          if ($LASTEXITCODE -ne 0) { throw 'py -3.13 -m venv .venv failed' }
+          & .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'pip install -r requirements.txt failed' }
