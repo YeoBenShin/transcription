@@ -38,20 +38,27 @@ def make_header(model_size: str, source_id: str, audio: Path, samples: int) -> d
     }
 
 
+def complete_length(partial: Path) -> int:
+    """Return the byte length of partial up to and including its last newline."""
+    return partial.read_bytes().rfind(b"\n") + 1
+
+
 def load_partial(partial: Path, header: dict) -> Tuple[List[Line], List[float]]:
     """Return the saved lines and the end time of each one.
 
-    Lines that are not valid JSON (a write cut short by a crash) are skipped.
-    If the file is missing or its header is not equal to `header`, return no lines.
+    Only lines that end with a newline are read. A last line with no newline is a write
+    cut short by a crash, and is ignored.
+    If the file is missing, a complete line is not valid JSON, or the header is not equal
+    to `header`, return no lines.
     """
     if not partial.is_file():
         return [], []
-    records = []
-    for raw in partial.read_text(encoding="utf-8").splitlines():
-        try:
-            records.append(json.loads(raw))
-        except json.JSONDecodeError:
-            continue
+    data = partial.read_bytes()[: complete_length(partial)].decode("utf-8", errors="replace")
+    try:
+        records = [json.loads(raw) for raw in data.splitlines()]
+    except json.JSONDecodeError:
+        print(f"{partial.name} cannot be read; starting again")
+        return [], []
     if not records or records[0] != {"header": header}:
         if records:
             print(f"{partial.name} is for other audio or another model; starting again")
@@ -59,16 +66,20 @@ def load_partial(partial: Path, header: dict) -> Tuple[List[Line], List[float]]:
     return [Line(r["start"], r["text"]) for r in records[1:]], [r["end"] for r in records[1:]]
 
 
-def start_partial(partial: Path, header: dict, lines: List[Line], ends: List[float]):
-    """Write header and lines to partial (temp file + rename), then return it open for append."""
-    tmp = partial.with_name(partial.name + ".tmp")
-    with tmp.open("w", encoding="utf-8") as handle:
-        handle.write(json.dumps({"header": header}) + "\n")
-        for line, end in zip(lines, ends):
-            handle.write(json.dumps({"start": line.start, "end": end, "text": line.text}) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp, partial)
+def open_partial(partial: Path, header: dict, resume: bool):
+    """Return partial open for append.
+
+    resume=True: cut the file after its last newline, which removes a line cut short by a crash.
+    resume=False: replace the file with one that has only the header line.
+    """
+    if resume:
+        with partial.open("r+b") as handle:
+            handle.truncate(complete_length(partial))
+    else:
+        with partial.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"header": header}) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
     return partial.open("a", encoding="utf-8")
 
 
@@ -92,7 +103,7 @@ def transcribe(audio: Path, model_size: str, workdir: Path, source_id: str) -> L
         print(f"resuming at {timestamp(offset)} ({len(lines)} lines in {partial.name})")
 
     remaining = samples[int(offset * SAMPLE_RATE):]
-    with start_partial(partial, header, lines, ends) as handle:
+    with open_partial(partial, header, resume=bool(lines)) as handle:
         if len(remaining) < MIN_REMAINING_SECONDS * SAMPLE_RATE:
             return lines
         print(f"transcribing with faster-whisper ({model_size}, cpu/int8)")

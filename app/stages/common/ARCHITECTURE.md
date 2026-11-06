@@ -26,7 +26,8 @@ Stages used by more than one source, or by the pipeline for all sources. `http` 
 - `load_model` caches the model (`lru_cache`). A batch run loads the model once, not once per file.
 - Language is fixed to English (`models.TARGET_LANGUAGE`).
 - Progress file `full.partial.jsonl`: line 1 is `{"header": {model, source_id, audio_bytes, audio_samples}}`, then one `{start, end, text}` per segment. Each line is flushed and fsynced, so a crash loses at most the segment in progress.
-- Lines that are not valid JSON are skipped, because a crash can cut the last write short. On each run the file is written again with only valid lines before new lines are appended. Otherwise a new line would join the cut-short one and both would be lost.
+- The file is append-only and each line is fsynced, so a crash can cut short only the last line. On resume the file is truncated after its last newline, and only lines that end with a newline are read. Otherwise the next append would join the cut-short line, and both would be lost. Truncation is used, not a rewrite of the good lines: it is one call, and it does not write the whole file again on each resume.
+- A complete line that is not valid JSON (for example after a hand edit) discards the progress. Without this, every attempt would fail on the same line.
 - To resume, the decoded audio array is sliced at the last `end` and the result timestamps get that offset added. `clip_timestamps` is not used: faster-whisper ignores `vad_filter` when `clip_timestamps` is set, and VAD is needed.
 - `faster_whisper` is imported inside `load_model`. Thus the caption-only and feed-transcript paths do not load it.
 
