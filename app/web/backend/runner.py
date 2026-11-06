@@ -4,6 +4,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,8 @@ class Job:
     status: str = "queued"  # queued | running | done | failed
     log: str = ""
     files: List[str] = field(default_factory=list)  # paths relative to outdir
+    started: Optional[float] = None  # time.monotonic() when status became running
+    finished: Optional[float] = None  # time.monotonic() when status became done or failed
 
 
 class Runner:
@@ -50,6 +53,7 @@ class Runner:
     def _work(self) -> None:
         while True:
             job = self.pending.get()
+            job.started = time.monotonic()
             job.status = "running"
             process = subprocess.Popen(
                 job.args, cwd=PROJECT_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -59,6 +63,7 @@ class Runner:
                 job.log = (job.log + chunk)[-MAX_LOG_CHARS:]
             code = process.wait()
             job.files = self._files_from_log(job.log)
+            job.finished = time.monotonic()
             job.status = "done" if code == 0 and job.files else "failed"
 
     def _files_from_log(self, log: str) -> List[str]:
@@ -75,7 +80,14 @@ class Runner:
 
     def snapshot(self) -> List[dict]:
         with self.lock:
-            return [self.jobs[i].__dict__ | {"args": None} for i in reversed(self.order)]
+            return [self._public(self.jobs[i]) for i in reversed(self.order)]
+
+    @staticmethod
+    def _public(job: Job) -> dict:
+        """Return the job as JSON-ready data, with `elapsed` seconds since it started running."""
+        data = {k: v for k, v in job.__dict__.items() if k not in ("args", "started", "finished")}
+        data["elapsed"] = None if job.started is None else (job.finished or time.monotonic()) - job.started
+        return data
 
     def get(self, job_id: str) -> Optional[Job]:
         return self.jobs.get(job_id)

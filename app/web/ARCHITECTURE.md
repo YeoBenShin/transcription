@@ -18,10 +18,10 @@ backend/server.py ──► backend/runner.py ──► subprocess: python -u -m
 |---|---|
 | `__main__.py` | Lets you run `python -m app.web`. Calls `backend.server.main`. |
 | `backend/server.py` | Stdlib HTTP server on `127.0.0.1`. Serves `frontend/index.html` at `/`, other frontend files at `/static/<name>`, the jobs API at `/api/jobs`, and `.txt` files from `--outdir` at `/files/`. Validates the POST body. |
-| `backend/runner.py` | `Job` and `Runner`. One worker thread takes queued jobs, runs the CLI as a subprocess, and stores its merged stdout/stderr. When the subprocess ends, the `.txt` paths the CLI printed become the job's files. Status: `queued`, `running`, `done`, `failed`. |
+| `backend/runner.py` | `Job` and `Runner`. One worker thread takes queued jobs, runs the CLI as a subprocess, and stores its merged stdout/stderr. When the subprocess ends, the `.txt` paths the CLI printed become the job's files. Status: `queued`, `running`, `done`, `failed`. Each job reports `elapsed` seconds: from `running` until `done`/`failed`, none while `queued`. |
 | `frontend/index.html` | Page markup: URL form, options, job list container. |
 | `frontend/style.css` | Styles. Light and dark through `prefers-color-scheme`. |
-| `frontend/app.js` | Submits the form, polls `/api/jobs` (1 s while a job is active, 4 s otherwise), renders log and file links. |
+| `frontend/app.js` | Submits the form, polls `/api/jobs` (1 s while a job is active, 4 s otherwise), renders log, file links and each job's running time. A log at the bottom follows new output; a log scrolled up keeps its position across polls. |
 
 ## Decisions
 
