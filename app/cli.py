@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from app.models import Options, timestamp
-from app.pipeline import NoTranscript, UnsupportedInput, run
+from app.pipeline import GaveUp, NoTranscript, UnsupportedInput, run
 
 
 def main(argv=None) -> int:
@@ -21,7 +21,7 @@ def main(argv=None) -> int:
     options = Options(outdir=args.outdir, model=args.model)
     try:
         result = run(args.input, options)
-    except (UnsupportedInput, NoTranscript) as error:
+    except (UnsupportedInput, NoTranscript, GaveUp) as error:
         print(error, file=sys.stderr)
         return 1
 

@@ -26,4 +26,5 @@ To add a source: make a module with a class that has the 3 members above, then a
 - Spotify does not give the audio or a transcript without a login. Most shows on Spotify also publish a public RSS feed, so the Spotify source uses Spotify only for the episode title and show name, and gets everything else from the feed.
 - The Spotify source accepts episode URLs only. A show URL does not identify one episode.
 - The Spotify source tries the feed transcript before Whisper, for the same reason as YouTube captions: it is free and fast, and the publisher made it from the real audio.
-- The YouTube and Spotify sources download audio into a temporary folder that they delete after transcription. Only the text output is kept.
+- The YouTube and Spotify sources download audio as `audio.<ext>` into the output folder. If a completed `audio.<ext>` is already there, they use it and do not download again. `pipeline.run` deletes it after `full.txt` is written. The local file source never deletes the input file.
+- The Whisper path (download + transcribe) runs inside `retry`. Caption and feed-transcript paths do not retry.

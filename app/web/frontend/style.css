@@ -17,6 +17,7 @@ button { background: var(--accent); color:#fff; border-color: var(--accent); cur
 .job { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:12px; }
 .job header { display:flex; gap:10px; align-items:baseline; }
 .url { flex:1; overflow-wrap:anywhere; font-weight:500; }
+.elapsed { font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
 .status { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
 .status.done { color: var(--ok); } .status.failed { color: var(--bad); }
 details { margin-top: 8px; }

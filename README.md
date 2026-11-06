@@ -32,7 +32,34 @@ winget configure -f .config/configuration.winget
 - Needs Windows 10 1809+ and winget 1.6+. Accept the UAC prompts.
 - Run it again any time. Installed parts are skipped.
 - On Windows, Python is in `.venv\Scripts\`, not `.venv/bin/`. Replace `.venv/bin/python` with `.venv\Scripts\python` in all commands below.
-- Not tested on Windows.
+
+#### Manual venv setup (Windows)
+
+Use this instead of `winget configure` when Python 3.13 is already installed, or to reinstall the packages. Run from the project folder.
+
+1. Create the venv (skip if `.venv` exists):
+
+   ```powershell
+   python -m venv .venv
+   ```
+
+2. Activate it:
+
+   | Shell | Command |
+   |---|---|
+   | PowerShell | `.venv\Scripts\Activate.ps1` |
+   | Command Prompt | `.venv\Scripts\activate.bat` |
+
+3. Install the requirements:
+
+   ```powershell
+   python -m pip install -r requirements.txt
+   ```
+
+- After activation, the prompt starts with `(.venv)`, and `python` means `.venv\Scripts\python.exe`.
+- If PowerShell says `running scripts is disabled on this system`, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then activate again.
+- `deactivate` leaves the venv.
+- Activation is optional. The wrapper scripts and the `.venv\Scripts\python` commands below use the venv without it.
 
 ## Method 1: CLI
 
@@ -70,6 +97,19 @@ Supported `<input>`:
 
 `<outdir>/<name>/` contains:
 - `full.txt`: all lines
+
+While Whisper runs, the folder also contains:
+- `full.partial.jsonl`: each line Whisper has made so far.
+- `audio.<ext>`: the downloaded audio (YouTube and Spotify only).
+
+Both are removed after `full.txt` is written.
+
+### Failures and resume
+
+- A Whisper failure is retried 2 times, after 2 s and 4 s. After 3 failed attempts the run stops with `failed after 3 attempts: ...` and exit code 1. Ctrl+C stops at once, with no retry.
+- To resume, run the same input again (same URL, or the same file in the inbox). If `full.partial.jsonl` is in the folder, Whisper continues from the last saved line. The audio is not downloaded again.
+- If `--model` is different or the audio file is different, the resume is not used, and Whisper starts again from the beginning
+- If the title cannot be fetched, the folder name is different (id only), so a resume does not find the earlier progress.
 
 `name` is `<title> [<id>]` for YouTube and Spotify (for example `Creating a C HTTP Server [JT9JI_SMHk4]`), or the file name without its extension for a local file. 
 
@@ -136,6 +176,8 @@ chmod +x bin/transcribe-web bin/transcribe-batch
 
 The `sh` scripts above do not run in Command Prompt or PowerShell. Create these 2 files.
 
+Save the content below into the files.
+
 `bin\transcribe-web.cmd`:
 
 ```bat
@@ -156,7 +198,17 @@ pause
 
 - No `chmod` needed.
 - `pause` keeps the window open after a double-click, so you can read the result.
-- Not tested on Windows.
+
+Run them from the project folder:
+
+| Shell | Command |
+|---|---|
+| Command Prompt | `bin\transcribe-web` |
+| PowerShell | `.\bin\transcribe-web.cmd` |
+| File Explorer | Double-click `bin\transcribe-web.cmd` |
+
+- Same pattern for `transcribe-batch`. Extra arguments go after the name, for example `.\bin\transcribe-web.cmd --port 8001`.
+- PowerShell needs the `.\` prefix. It does not run scripts from the current folder by name alone.
 
 ## Moving parts
 

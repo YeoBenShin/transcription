@@ -22,12 +22,11 @@ class Transcript:
     lines: List[Line]
     origin: str  # how the lines were made, e.g. "youtube captions" or "faster-whisper"
     title: Optional[str] = None  # video or episode name, if known
+    downloaded_audio: Optional[Path] = None  # audio file the source downloaded; removed after full.txt is written
 
     @property
     def folder_name(self) -> str:
-        """'<safe title> [<source_id>]'. Only the source_id if there is no usable title."""
-        name = safe_name(self.title or "")
-        return f"{name} [{self.source_id}]" if name else self.source_id
+        return folder_name(self.title, self.source_id)
 
 
 @dataclass
@@ -39,6 +38,12 @@ class Options:
     @property
     def chunk_seconds(self) -> float:
         return self.chunk_minutes * 60
+
+
+def folder_name(title: Optional[str], source_id: str) -> str:
+    """'<safe title> [<source_id>]'. Only the source_id if there is no usable title."""
+    name = safe_name(title or "")
+    return f"{name} [{source_id}]" if name else source_id
 
 
 def timestamp(seconds: float) -> str:

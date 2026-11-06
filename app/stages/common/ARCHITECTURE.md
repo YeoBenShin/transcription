@@ -7,7 +7,9 @@ Stages used by more than one source, or by the pipeline for all sources. `http` 
 | Stage | Input | Output |
 |---|---|---|
 | `http.download_file` | direct file URL, target folder, file stem | path of the downloaded file |
-| `transcribe.transcribe` | audio/video file path, model size | `List[Line]` |
+| `audio_file.find_audio` | folder | path of a completed `audio.<ext>`, or `None` |
+| `transcribe.transcribe` | audio/video file path, model size, output folder, source id | `List[Line]`. Saves each line to `full.partial.jsonl` and resumes from it |
+| `retry.retry` | function | its result. Raises `GaveUp` after 3 failed attempts |
 | `chunk.chunk` (not used now) | lines, window length in seconds | `List[List[Line]]` |
 | `write.write_chunks` (not used now) | chunks, folder name, window length, outdir | written file paths |
 | `write.write_full` | lines, folder name, outdir | `[full.txt path]` |
@@ -15,6 +17,7 @@ Stages used by more than one source, or by the pipeline for all sources. `http` 
 ## Decisions
 
 ### http
+- `download_file` writes to `<name>.part` and renames it when the download is complete. Thus `find_audio` never takes a half-downloaded file. yt-dlp does the same by itself.
 - `download_file` streams the enclosure URL with `requests`. yt-dlp is not necessary for a direct mp3 link. Enclosure URLs often go through tracking redirects; the file extension comes from the final URL.
 
 ### transcribe
@@ -22,6 +25,10 @@ Stages used by more than one source, or by the pipeline for all sources. `http` 
 - `vad_filter=True` skips silence and music. This decreases hallucinated text in long silent parts.
 - `load_model` caches the model (`lru_cache`). A batch run loads the model once, not once per file.
 - Language is fixed to English (`models.TARGET_LANGUAGE`).
+- Progress file `full.partial.jsonl`: line 1 is `{"header": {model, source_id, audio_bytes, audio_samples}}`, then one `{start, end, text}` per segment. Each line is flushed and fsynced, so a crash loses at most the segment in progress.
+- The file is append-only and each line is fsynced, so a crash can cut short only the last line. On resume the file is truncated after its last newline, and only lines that end with a newline are read. Otherwise the next append would join the cut-short line, and both would be lost. Truncation is used, not a rewrite of the good lines: it is one call, and it does not write the whole file again on each resume.
+- A complete line that is not valid JSON (for example after a hand edit) discards the progress. Without this, every attempt would fail on the same line.
+- To resume, the decoded audio array is sliced at the last `end` and the result timestamps get that offset added. `clip_timestamps` is not used: faster-whisper ignores `vad_filter` when `clip_timestamps` is set, and VAD is needed.
 - `faster_whisper` is imported inside `load_model`. Thus the caption-only and feed-transcript paths do not load it.
 
 #### Model options
@@ -181,7 +188,12 @@ transcript = aai.Transcriber().transcribe(path, config=aai.TranscriptionConfig(s
 # transcript.utterances: each has .start (ms), .speaker, .text
 ```
 
+### retry
+- Catches `Exception` only. `KeyboardInterrupt` is a `BaseException`, so Ctrl+C stops at once.
+- Waits 2 s, then 4 s. The backoff helps network errors in the download. A file that cannot be decoded fails all 3 attempts in a few seconds.
+
 ### chunk / write
+- `write_full` writes `full.txt.tmp`, then renames it. A crash during the write never leaves a half-written `full.txt`.
 - Chunking is disabled. The pipeline calls only `write_full`. The CLI, batch and web UI take no chunk arguments. `chunk.py`, `write_chunks` and `Options.chunk_minutes` stay so chunking can come back later.
 - Chunks are fixed time windows, aligned to multiples of the window length. Empty windows are dropped, but chunk file names keep the real window times.
 - `write_chunks` deletes old `chunk_*.txt` files in the target folder first. This prevents files from an earlier run with a different `--chunk-minutes` from remaining.

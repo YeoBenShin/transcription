@@ -1,11 +1,11 @@
 """Source: full YouTube video URL. Captions first, then audio + Whisper."""
 
 import re
-import tempfile
-from pathlib import Path
 from typing import Optional
 
-from app.models import Options, Transcript
+from app.models import Options, Transcript, folder_name
+from app.stages.common.audio_file import AUDIO_STEM, find_audio
+from app.stages.common.retry import retry
 from app.stages.youtube.captions import fetch_captions
 from app.stages.youtube.download import download_audio
 from app.stages.common.transcribe import transcribe
@@ -49,9 +49,14 @@ class YouTubeSource:
             return Transcript(video_id, lines, origin="youtube captions", title=title)
 
         print("falling back to audio")
-        with tempfile.TemporaryDirectory() as tmp:
-            audio = download_audio(f"https://www.youtube.com/watch?v={video_id}", Path(tmp))
-            lines = transcribe(audio, options.model)
+        workdir = options.outdir / folder_name(title, video_id)
+        url = f"https://www.youtube.com/watch?v={video_id}"
+
+        def download_and_transcribe():
+            audio = find_audio(workdir) or download_audio(url, workdir, AUDIO_STEM)
+            return audio, transcribe(audio, options.model, workdir, video_id)
+
+        audio, lines = retry(download_and_transcribe)
         if not lines:
             return None
-        return Transcript(video_id, lines, origin="faster-whisper", title=title)
+        return Transcript(video_id, lines, origin="faster-whisper", title=title, downloaded_audio=audio)
