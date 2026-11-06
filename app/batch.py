@@ -44,7 +44,7 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--inbox", type=Path, default=DEFAULT_INBOX, help="folder with the files to transcribe")
     parser.add_argument("--outdir", type=Path, default=Path("out"))
-    parser.add_argument("--model", default="small", help="faster-whisper model size")
+    parser.add_argument("--model", default="base", help="faster-whisper model size")
     parser.add_argument("--keep", action="store_true", help="do not move processed files into <inbox>/done")
     args = parser.parse_args(argv)
 

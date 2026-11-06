@@ -64,7 +64,7 @@ def make_handler(runner: Runner):
             try:
                 data = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
                 url = str(data.get("url", "")).strip()
-                model = str(data.get("model", "small")).strip() or "small"
+                model = str(data.get("model", "base")).strip() or "base"
             except (ValueError, TypeError):
                 self._json(400, {"error": "invalid request"})
                 return

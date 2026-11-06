@@ -66,7 +66,7 @@ Use this instead of `winget configure` when Python 3.13 is already installed, or
 ### One input: `python -m app`
 
 ```sh
-.venv/bin/python -m app <input> [--outdir out] [--model small]
+.venv/bin/python -m app <input> [--outdir out] [--model base]
 ```
 
 Supported `<input>`:
@@ -84,7 +84,7 @@ Supported `<input>`:
 ### Personal audio folder: `python -m app.batch`
 
 ```sh
-.venv/bin/python -m app.batch [--inbox to-be-transcribe] [--outdir out] [--model small] [--keep]
+.venv/bin/python -m app.batch [--inbox to-be-transcribe] [--outdir out] [--model base] [--keep]
 ```
 
 - Transcribes each audio/video file directly inside `to-be-transcribe/` (created on first run). Hidden files and non-media extensions are skipped.

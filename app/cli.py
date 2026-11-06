@@ -15,7 +15,7 @@ def main(argv=None) -> int:
     )
     parser.add_argument("input", help="full YouTube video URL, Spotify episode URL, or path to an audio/video file")
     parser.add_argument("--outdir", type=Path, default=Path("out"))
-    parser.add_argument("--model", default="small", help="faster-whisper model size")
+    parser.add_argument("--model", default="base", help="faster-whisper model size")
     args = parser.parse_args(argv)
 
     options = Options(outdir=args.outdir, model=args.model)
