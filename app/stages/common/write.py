@@ -37,9 +37,11 @@ def write_chunks(
 
 
 def write_full(lines: List[Line], name: str, outdir: Path) -> List[Path]:
-    """Write full.txt into outdir/name."""
+    """Write full.txt into outdir/name. Write a temp file first, then rename it to full.txt."""
     directory = outdir / name
     directory.mkdir(parents=True, exist_ok=True)
     full = directory / "full.txt"
-    full.write_text("\n".join(f"[{timestamp(l.start)}] {l.text}" for l in lines) + "\n")
+    tmp = full.with_name(full.name + ".tmp")
+    tmp.write_text("\n".join(f"[{timestamp(l.start)}] {l.text}" for l in lines) + "\n")
+    tmp.replace(full)
     return [full]

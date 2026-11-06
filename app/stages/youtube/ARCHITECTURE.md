@@ -8,7 +8,7 @@ Stages that only the YouTube source calls. `sources/youtube.py` calls `video_tit
 |---|---|---|
 | `video_title.fetch_video_title` | YouTube video id | title, or `None` on failure |
 | `captions.fetch_captions` | YouTube video id | `List[Line]`, or `None` if there are no usable captions |
-| `download.download_audio` | any URL that yt-dlp supports, target folder | path of the audio file |
+| `download.download_audio` | any URL that yt-dlp supports, target folder, file stem | path of the audio file |
 
 ## Decisions
 
