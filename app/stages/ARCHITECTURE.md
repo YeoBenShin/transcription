@@ -8,7 +8,7 @@ Each stage does one thing. Stages are grouped by which sources use them:
 |---|---|---|
 | `youtube/` | `sources/youtube.py` only | `video_title`, `captions`, `download` |
 | `spotify/` | `sources/spotify.py` only | `spotify_episode`, `podcast_feed`, `feed_transcript` |
-| `common/` | more than one source, or `pipeline.py` for all sources | `http`, `transcribe`, `chunk`, `write` |
+| `common/` | more than one source, or `pipeline.py` for all sources | `http`, `transcribe`, `chunk` (not used now), `write` |
 
 Import rules:
 - Stages do not import from `sources/` or `pipeline.py`.

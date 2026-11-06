@@ -1,4 +1,4 @@
-"""Stage: write chunks and the full transcript as .txt files."""
+"""Stage: write transcript .txt files."""
 
 from pathlib import Path
 from typing import List
@@ -34,3 +34,12 @@ def write_chunks(
     )
     paths.append(full)
     return paths
+
+
+def write_full(lines: List[Line], name: str, outdir: Path) -> List[Path]:
+    """Write full.txt into outdir/name."""
+    directory = outdir / name
+    directory.mkdir(parents=True, exist_ok=True)
+    full = directory / "full.txt"
+    full.write_text("\n".join(f"[{timestamp(l.start)}] {l.text}" for l in lines) + "\n")
+    return [full]

@@ -1,6 +1,6 @@
 # transcription
 
-Turns a media input into timestamped transcript `.txt` files, split into fixed-length chunks.
+Turns a media input into a timestamped transcript `.txt` file.
 
 There are 2 input types:
 
@@ -39,7 +39,7 @@ winget configure -f .config/configuration.winget
 ### One input: `python -m app`
 
 ```sh
-.venv/bin/python -m app <input> [--chunk-minutes 4] [--outdir out] [--model small]
+.venv/bin/python -m app <input> [--outdir out] [--model small]
 ```
 
 Supported `<input>`:
@@ -57,7 +57,7 @@ Supported `<input>`:
 ### Personal audio folder: `python -m app.batch`
 
 ```sh
-.venv/bin/python -m app.batch [--inbox to-be-transcribe] [--chunk-minutes 4] [--outdir out] [--model small] [--keep]
+.venv/bin/python -m app.batch [--inbox to-be-transcribe] [--outdir out] [--model small] [--keep]
 ```
 
 - Transcribes each audio/video file directly inside `to-be-transcribe/` (created on first run). Hidden files and non-media extensions are skipped.
@@ -69,14 +69,11 @@ Supported `<input>`:
 ## Output
 
 `<outdir>/<name>/` contains:
-- `chunk_NNN_HHMMSS-HHMMSS.txt`: one file per time window, with a header line
 - `full.txt`: all lines
 
 `name` is `<title> [<id>]` for YouTube and Spotify (for example `Creating a C HTTP Server [JT9JI_SMHk4]`), or the file name without its extension for a local file. 
 
 Characters not allowed in file names are removed from the title, and the title is cut to 120 characters. If the title cannot be fetched, `name` is only the video or episode id. 
-
-A new run removes old chunk files from that folder.
 
 ## Method 2: Wrapper scripts
 
@@ -96,7 +93,7 @@ Double-click the script in Finder (macOS) or File Explorer (Windows). It also ru
 .venv/bin/python -m app.web [--port 8000] [--outdir out]
 ```
 
-- Open `http://127.0.0.1:8000`. Paste a YouTube or Spotify episode URL, set chunk minutes and Whisper model, click Transcribe.
+- Open `http://127.0.0.1:8000`. Paste a YouTube or Spotify episode URL, set Whisper model, click Transcribe.
 - Each submit runs `python -m app <url> ...` as a subprocess. Output files are the same as the CLI, in the same `--outdir`.
 - Jobs run one at a time. Others wait as `queued`. The page shows the live CLI log and links to view or download each `.txt`.
 - Job list is in memory only. A server restart clears the list, not the files.
@@ -167,8 +164,8 @@ pause
 - `app/batch.py`: command line for a folder. Calls `pipeline.run` once per file.
 - `app/web/`: local web page. `backend/` runs `python -m app` per URL. `frontend/` is static HTML, CSS, JS.
 - `bin/transcribe-web`, `bin/transcribe-batch`: executable wrappers for `app.web` and `app.batch`.
-- `app/pipeline.py`: picks a source for the input, then runs chunk + write.
+- `app/pipeline.py`: picks a source for the input, then writes `full.txt`.
 - `app/sources/`: one module per input type. Each one decides which stages to run.
-- `app/stages/`: single-purpose steps. `youtube/` (title, captions, download) and `spotify/` (Spotify metadata, RSS feed lookup, feed transcript) hold stages for one source; `common/` holds stages for more than one (http, transcribe, chunk, write).
+- `app/stages/`: single-purpose steps. `youtube/` (title, captions, download) and `spotify/` (Spotify metadata, RSS feed lookup, feed transcript) hold stages for one source; `common/` holds stages for more than one (http, transcribe, write; chunk is not used now).
 
 See `ARCHITECTURE.md` in each folder.

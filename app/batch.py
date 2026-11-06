@@ -40,10 +40,9 @@ def move_to_done(path: Path, done: Path) -> Path:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.batch",
-        description="Transcribe every audio/video file in a folder into chunked transcript .txt files.",
+        description="Transcribe every audio/video file in a folder into transcript .txt files.",
     )
     parser.add_argument("--inbox", type=Path, default=DEFAULT_INBOX, help="folder with the files to transcribe")
-    parser.add_argument("--chunk-minutes", type=float, default=4.0)
     parser.add_argument("--outdir", type=Path, default=Path("out"))
     parser.add_argument("--model", default="small", help="faster-whisper model size")
     parser.add_argument("--keep", action="store_true", help="do not move processed files into <inbox>/done")
@@ -60,7 +59,7 @@ def main(argv=None) -> int:
         print(f"no media files in {inbox}/")
         return 0
 
-    options = Options(chunk_minutes=args.chunk_minutes, outdir=args.outdir, model=args.model)
+    options = Options(outdir=args.outdir, model=args.model)
     failed = []
     for number, path in enumerate(files, start=1):
         print(f"\n[{number}/{len(files)}] {path.name}")
@@ -70,7 +69,7 @@ def main(argv=None) -> int:
             print(f"  failed: {error}", file=sys.stderr)
             failed.append(path)
             continue
-        print(f"  {result.chunk_count} chunks -> {result.paths[-1].parent}")
+        print(f"  -> {result.paths[-1]}")
         if not args.keep:
             move_to_done(path, inbox / DONE_DIRNAME)
 

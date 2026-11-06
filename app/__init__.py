@@ -1,4 +1,4 @@
-"""Turn media inputs into chunked, timestamped transcript files."""
+"""Turn media inputs into timestamped transcript files."""
 
 from app.models import Line, Options, Transcript
 from app.pipeline import run

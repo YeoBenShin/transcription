@@ -13,7 +13,6 @@ cli.py ──► pipeline.run(raw, Options) ◄── batch.py (one call per fil
               ├─ source.get_transcript(raw, options) ──► Transcript(source_id, lines, origin, title)
               │      (the source calls the acquisition stages it needs)
               │
-              ├─ stages.common.chunk   (same for all sources)
               └─ stages.common.write   (same for all sources)
 ```
 

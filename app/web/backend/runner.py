@@ -34,10 +34,9 @@ class Runner:
         self.pending: "queue.Queue[Job]" = queue.Queue()
         threading.Thread(target=self._work, daemon=True).start()
 
-    def submit(self, url: str, chunk_minutes: float, model: str) -> Job:
+    def submit(self, url: str, model: str) -> Job:
         args = [
             sys.executable, "-u", "-m", "app", url,
-            "--chunk-minutes", f"{chunk_minutes:g}",
             "--outdir", str(self.outdir),
             "--model", model,
         ]

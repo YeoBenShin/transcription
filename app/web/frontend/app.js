@@ -7,7 +7,7 @@ $("form").addEventListener("submit", async (e) => {
   const res = await fetch("/api/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: $("url").value, chunk_minutes: Number($("chunk").value), model: $("model").value }),
+    body: JSON.stringify({ url: $("url").value, model: $("model").value }),
   });
   if (!res.ok) { $("error").textContent = (await res.json()).error; return; }
   $("url").value = "";

@@ -1,4 +1,4 @@
-"""The single entry point: route the input to a source, then chunk and write."""
+"""The single entry point: route the input to a source, then write the transcript."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,8 +7,7 @@ from typing import List, Optional
 from app.models import Options, Transcript
 from app.sources import SOURCES
 from app.sources.base import Source
-from app.stages.common.chunk import chunk
-from app.stages.common.write import write_chunks
+from app.stages.common.write import write_full
 
 
 class UnsupportedInput(ValueError):
@@ -22,7 +21,6 @@ class NoTranscript(RuntimeError):
 @dataclass
 class Result:
     transcript: Transcript
-    chunk_count: int
     paths: List[Path]
 
 
@@ -37,13 +35,12 @@ def route(raw: str, sources: Optional[List[Source]] = None) -> Source:
 
 
 def run(raw: str, options: Options) -> Result:
-    """Get a transcript for any supported input and write it as chunked .txt files."""
+    """Get a transcript for any supported input and write it as full.txt."""
     source = route(raw)
     print(f"input type: {source.name}")
     transcript = source.get_transcript(raw, options)
     if transcript is None or not transcript.lines:
         raise NoTranscript(f"no transcript could be produced for {raw!r}")
 
-    chunks = chunk(transcript.lines, options.chunk_seconds)
-    paths = write_chunks(chunks, transcript.folder_name, options.chunk_seconds, options.outdir)
-    return Result(transcript, len(chunks), paths)
+    paths = write_full(transcript.lines, transcript.folder_name, options.outdir)
+    return Result(transcript, paths)

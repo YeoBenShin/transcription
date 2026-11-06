@@ -64,7 +64,6 @@ def make_handler(runner: Runner):
             try:
                 data = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
                 url = str(data.get("url", "")).strip()
-                chunk_minutes = float(data.get("chunk_minutes", 4))
                 model = str(data.get("model", "small")).strip() or "small"
             except (ValueError, TypeError):
                 self._json(400, {"error": "invalid request"})
@@ -72,10 +71,7 @@ def make_handler(runner: Runner):
             if not url.startswith(("http://", "https://")):
                 self._json(400, {"error": "enter a full http(s) URL"})
                 return
-            if chunk_minutes <= 0:
-                self._json(400, {"error": "chunk minutes must be more than 0"})
-                return
-            job = runner.submit(url, chunk_minutes, model)
+            job = runner.submit(url, model)
             self._json(201, {"id": job.id})
 
     return Handler

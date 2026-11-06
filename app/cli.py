@@ -11,15 +11,14 @@ from app.pipeline import NoTranscript, UnsupportedInput, run
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app",
-        description="Any supported input -> chunked transcript .txt files.",
+        description="Any supported input -> transcript .txt file.",
     )
     parser.add_argument("input", help="full YouTube video URL, Spotify episode URL, or path to an audio/video file")
-    parser.add_argument("--chunk-minutes", type=float, default=4.0)
     parser.add_argument("--outdir", type=Path, default=Path("out"))
     parser.add_argument("--model", default="small", help="faster-whisper model size")
     args = parser.parse_args(argv)
 
-    options = Options(chunk_minutes=args.chunk_minutes, outdir=args.outdir, model=args.model)
+    options = Options(outdir=args.outdir, model=args.model)
     try:
         result = run(args.input, options)
     except (UnsupportedInput, NoTranscript) as error:
@@ -28,8 +27,7 @@ def main(argv=None) -> int:
 
     lines = result.transcript.lines
     print(
-        f"\n{len(lines)} lines ({result.transcript.origin}), ~{timestamp(lines[-1].start)}, "
-        f"{result.chunk_count} chunks of {args.chunk_minutes:g} min:"
+        f"\n{len(lines)} lines ({result.transcript.origin}), ~{timestamp(lines[-1].start)}:"
     )
     for path in result.paths:
         print(f"  {path}")

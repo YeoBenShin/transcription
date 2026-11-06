@@ -8,7 +8,7 @@
 | `cli.py` | Parses arguments into `Options`, calls `pipeline.run`, prints a summary. Exit code 1 if the input is not supported or no transcript was produced. |
 | `batch.py` | `python -m app.batch`. Lists media files in the inbox folder, calls `pipeline.run` per file, moves each success into `<inbox>/done/`. Exit code 1 if any file failed. |
 | `web/` | Local web interface. See `app/web/ARCHITECTURE.md`. |
-| `pipeline.py` | `route()` selects a source. `run()` gets the transcript, then chunks and writes it. Returns a `Result`. |
+| `pipeline.py` | `route()` selects a source. `run()` gets the transcript, then writes it as `full.txt`. Returns a `Result`. |
 | `models.py` | `Line`, `Transcript`, `Options`, and the `timestamp` / `clean` helpers. |
 
 `pipeline.run` is also the library API (`from app import run, Options`).

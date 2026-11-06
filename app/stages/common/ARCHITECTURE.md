@@ -8,8 +8,9 @@ Stages used by more than one source, or by the pipeline for all sources. `http` 
 |---|---|---|
 | `http.download_file` | direct file URL, target folder, file stem | path of the downloaded file |
 | `transcribe.transcribe` | audio/video file path, model size | `List[Line]` |
-| `chunk.chunk` | lines, window length in seconds | `List[List[Line]]` |
-| `write.write_chunks` | chunks, folder name, window length, outdir | written file paths |
+| `chunk.chunk` (not used now) | lines, window length in seconds | `List[List[Line]]` |
+| `write.write_chunks` (not used now) | chunks, folder name, window length, outdir | written file paths |
+| `write.write_full` | lines, folder name, outdir | `[full.txt path]` |
 
 ## Decisions
 
@@ -181,5 +182,6 @@ transcript = aai.Transcriber().transcribe(path, config=aai.TranscriptionConfig(s
 ```
 
 ### chunk / write
+- Chunking is disabled. The pipeline calls only `write_full`. The CLI, batch and web UI take no chunk arguments. `chunk.py`, `write_chunks` and `Options.chunk_minutes` stay so chunking can come back later.
 - Chunks are fixed time windows, aligned to multiples of the window length. Empty windows are dropped, but chunk file names keep the real window times.
 - `write_chunks` deletes old `chunk_*.txt` files in the target folder first. This prevents files from an earlier run with a different `--chunk-minutes` from remaining.
