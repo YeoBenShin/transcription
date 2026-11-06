@@ -32,7 +32,34 @@ winget configure -f .config/configuration.winget
 - Needs Windows 10 1809+ and winget 1.6+. Accept the UAC prompts.
 - Run it again any time. Installed parts are skipped.
 - On Windows, Python is in `.venv\Scripts\`, not `.venv/bin/`. Replace `.venv/bin/python` with `.venv\Scripts\python` in all commands below.
-- Not tested on Windows.
+
+#### Manual venv setup (Windows)
+
+Use this instead of `winget configure` when Python 3.13 is already installed, or to reinstall the packages. Run from the project folder.
+
+1. Create the venv (skip if `.venv` exists):
+
+   ```powershell
+   python -m venv .venv
+   ```
+
+2. Activate it:
+
+   | Shell | Command |
+   |---|---|
+   | PowerShell | `.venv\Scripts\Activate.ps1` |
+   | Command Prompt | `.venv\Scripts\activate.bat` |
+
+3. Install the requirements:
+
+   ```powershell
+   python -m pip install -r requirements.txt
+   ```
+
+- After activation, the prompt starts with `(.venv)`, and `python` means `.venv\Scripts\python.exe`.
+- If PowerShell says `running scripts is disabled on this system`, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then activate again.
+- `deactivate` leaves the venv.
+- Activation is optional. The wrapper scripts and the `.venv\Scripts\python` commands below use the venv without it.
 
 ## Method 1: CLI
 
@@ -136,6 +163,8 @@ chmod +x bin/transcribe-web bin/transcribe-batch
 
 The `sh` scripts above do not run in Command Prompt or PowerShell. Create these 2 files.
 
+Save the content below into the files.
+
 `bin\transcribe-web.cmd`:
 
 ```bat
@@ -156,7 +185,17 @@ pause
 
 - No `chmod` needed.
 - `pause` keeps the window open after a double-click, so you can read the result.
-- Not tested on Windows.
+
+Run them from the project folder:
+
+| Shell | Command |
+|---|---|
+| Command Prompt | `bin\transcribe-web` |
+| PowerShell | `.\bin\transcribe-web.cmd` |
+| File Explorer | Double-click `bin\transcribe-web.cmd` |
+
+- Same pattern for `transcribe-batch`. Extra arguments go after the name, for example `.\bin\transcribe-web.cmd --port 8001`.
+- PowerShell needs the `.\` prefix. It does not run scripts from the current folder by name alone.
 
 ## Moving parts
 
