@@ -108,7 +108,7 @@ Both are removed after `full.txt` is written.
 
 - A Whisper failure is retried 2 times, after 2 s and 4 s. After 3 failed attempts the run stops with `failed after 3 attempts: ...` and exit code 1. Ctrl+C stops at once, with no retry.
 - To resume, run the same input again (same URL, or the same file in the inbox). If `full.partial.jsonl` is in the folder, Whisper continues from the last saved line. The audio is not downloaded again.
-- The resume is not used, and Whisper starts again from the beginning, if `--model` is different or the audio file is different.
+- If `--model` is different or the audio file is different, the resume is not used, and Whisper starts again from the beginning
 - If the title cannot be fetched, the folder name is different (id only), so a resume does not find the earlier progress.
 
 `name` is `<title> [<id>]` for YouTube and Spotify (for example `Creating a C HTTP Server [JT9JI_SMHk4]`), or the file name without its extension for a local file. 

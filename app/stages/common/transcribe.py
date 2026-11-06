@@ -38,32 +38,52 @@ def make_header(model_size: str, source_id: str, audio: Path, samples: int) -> d
     }
 
 
-def complete_length(partial: Path) -> int:
-    """Return the byte length of partial up to and including its last newline."""
-    return partial.read_bytes().rfind(b"\n") + 1
+def complete_length(data: bytes) -> int:
+    """Return the byte length of data up to and including its last newline."""
+    return data.rfind(b"\n") + 1
+
+
+def is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def is_segment(record) -> bool:
+    """Return True if record is a dict with numeric start and end and a str text."""
+    return (
+        isinstance(record, dict)
+        and is_number(record.get("start"))
+        and is_number(record.get("end"))
+        and isinstance(record.get("text"), str)
+    )
 
 
 def load_partial(partial: Path, header: dict) -> Tuple[List[Line], List[float]]:
     """Return the saved lines and the end time of each one.
 
     Only lines that end with a newline are read. A last line with no newline is a write
-    cut short by a crash, and is ignored.
-    If the file is missing, a complete line is not valid JSON, or the header is not equal
-    to `header`, return no lines.
+    cut short by a crash, and is ignored. Blank lines are ignored.
+    If the file is missing, a complete line is not valid UTF-8 or JSON, a segment line does
+    not have numeric start and end and a str text, or the header is not equal to `header`,
+    return no lines.
     """
     if not partial.is_file():
         return [], []
-    data = partial.read_bytes()[: complete_length(partial)].decode("utf-8", errors="replace")
+    data = partial.read_bytes()
     try:
-        records = [json.loads(raw) for raw in data.splitlines()]
-    except json.JSONDecodeError:
+        text = data[: complete_length(data)].decode("utf-8")
+        records = [json.loads(raw) for raw in text.splitlines() if raw.strip()]
+    except (UnicodeDecodeError, json.JSONDecodeError):
         print(f"{partial.name} cannot be read; starting again")
         return [], []
     if not records or records[0] != {"header": header}:
         if records:
             print(f"{partial.name} is for other audio or another model; starting again")
         return [], []
-    return [Line(r["start"], r["text"]) for r in records[1:]], [r["end"] for r in records[1:]]
+    segments = records[1:]
+    if not all(is_segment(r) for r in segments):
+        print(f"{partial.name} has a line that is not a segment; starting again")
+        return [], []
+    return [Line(r["start"], r["text"]) for r in segments], [r["end"] for r in segments]
 
 
 def open_partial(partial: Path, header: dict, resume: bool):
@@ -74,7 +94,7 @@ def open_partial(partial: Path, header: dict, resume: bool):
     """
     if resume:
         with partial.open("r+b") as handle:
-            handle.truncate(complete_length(partial))
+            handle.truncate(complete_length(handle.read()))
     else:
         with partial.open("w", encoding="utf-8") as handle:
             handle.write(json.dumps({"header": header}) + "\n")
