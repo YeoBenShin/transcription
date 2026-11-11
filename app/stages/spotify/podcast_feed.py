@@ -1,4 +1,4 @@
-"""Stage: find a show's public RSS feed with the Apple Podcasts search API, then find one episode in it."""
+"""Stage: find a show's public RSS feed with Apple Podcasts show and episode searches, then find one episode in it."""
 
 import html
 import re
@@ -38,20 +38,46 @@ def normalize(text: str) -> str:
     return " ".join(re.sub(r"[^0-9a-z]+", " ", html.unescape(text).lower()).split())
 
 
-def search_feed_urls(show: str) -> List[str]:
-    """Return feed URLs of Apple Podcasts search results. Results with the same show name come first."""
-    response = requests.get(
-        APPLE_SEARCH,
-        params={"term": show, "media": "podcast", "entity": "podcast", "limit": 10},
-        headers={"User-Agent": USER_AGENT},
-        timeout=TIMEOUT,
+def _apple_search(term: str, entity: str) -> List[dict]:
+    """Return Apple Podcasts search results for `term` that have a feed URL. Return [] on a request error."""
+    try:
+        response = requests.get(
+            APPLE_SEARCH,
+            params={"term": term, "media": "podcast", "entity": entity, "limit": 10},
+            headers={"User-Agent": USER_AGENT},
+            timeout=TIMEOUT,
+        )
+        response.raise_for_status()
+        results = response.json().get("results", [])
+    except (requests.RequestException, ValueError) as error:
+        print(f"apple search {entity} {term!r} failed ({type(error).__name__})")
+        return []
+    return [r for r in results if r.get("feedUrl")]
+
+
+def search_feed_urls(show: str, title: str) -> List[str]:
+    """Return feed URLs from three Apple Podcasts searches, at most MAX_FEEDS.
+
+    Searches: episodes by `title`, shows by `show`, episodes by `show`.
+    Order: feeds with an episode named `title`, then feeds with the show name `show`, then the rest,
+    each group in search order.
+    """
+    results = (
+        _apple_search(title, "podcastEpisode")
+        + _apple_search(show, "podcast")
+        + _apple_search(show, "podcastEpisode")
     )
-    response.raise_for_status()
-    results = [r for r in response.json().get("results", []) if r.get("feedUrl")]
-    wanted = normalize(show)
-    results.sort(key=lambda r: normalize(r.get("collectionName", "")) != wanted)
+    wanted_show, wanted_title = normalize(show), normalize(title)
+
+    def rank(result: dict) -> int:
+        if normalize(result.get("trackName", "")) == wanted_title and result.get("kind") == "podcast-episode":
+            return 0
+        if normalize(result.get("collectionName", "")) == wanted_show:
+            return 1
+        return 2
+
     urls: List[str] = []
-    for result in results:
+    for result in sorted(results, key=rank):
         if result["feedUrl"] not in urls:
             urls.append(result["feedUrl"])
     return urls[:MAX_FEEDS]
@@ -112,7 +138,7 @@ def match_item(items: list, title: str, released: Optional[datetime]):
 
 def find_feed_episode(show: str, title: str, released: Optional[datetime]) -> Optional[FeedEpisode]:
     """Search feeds for `show` and return the first episode that matches `title` and `released`."""
-    feed_urls = search_feed_urls(show)
+    feed_urls = search_feed_urls(show, title)
     if not feed_urls:
         print(f"no RSS feed found for {show!r}")
         return None

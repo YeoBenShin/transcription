@@ -18,8 +18,10 @@ Stages that only the Spotify source calls. `sources/spotify.py` calls `spotify_e
 - Sends a browser User-Agent. The embed page is made for browsers.
 
 ### podcast_feed
-- Finds feeds with the Apple Podcasts search API (`itunes.apple.com/search`). It needs no key. Podcast Index also has a search API, but it needs a key and secret.
-- One show name can give many search results (copies, summary shows). Results with the same normalized name are tried first, and a feed is used only if it contains the episode. At most `MAX_FEEDS` feeds are fetched.
+- Finds feeds with the Apple Podcasts search API (`itunes.apple.com/search`). It needs no key. Podcast Index also has a search API, but it needs a key and secret. Listen Notes and Podchaser also need a key. fyyd and gpodder.net need no key, but did not find shows that Apple has.
+- Three Apple searches: episodes by episode title, shows by show name, episodes by show name. A show search alone can miss the show: `The Acquirers Podcast` gave only "Acquired..." shows in the top 10, but `The Acquirer's Podcast` gave the correct show first. The episode-title search found it first. The Spotify embed page has no publisher name, so a search by publisher is not possible.
+- One search can give many results (copies, summary shows). Order: feeds with an episode whose normalized title is the Spotify title, then feeds with the same normalized show name, then the rest. A feed is used only if it contains the episode. At most `MAX_FEEDS` feeds are fetched.
+- A failed search gives no results and the other searches continue.
 - Episode match: exact normalized title first (case, punctuation and HTML entities ignored, because feeds encode `&` as `&#038;` and Spotify does not). If no exact match: the most similar title among items published within 2 days of the Spotify release time.
 - Feeds are parsed with `defusedxml`, because the XML comes from third parties.
 
