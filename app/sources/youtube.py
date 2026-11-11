@@ -20,11 +20,12 @@ def parse_video_id(raw: str) -> Optional[str]:
     """Return the video id at the end of a full YouTube URL, or None.
 
     The URL must start with https://www. and the host name must be youtube or youtu.be.
+    Text from the first '&' is removed (playlist and other extra parameters).
     The id is the text after the last '=' or '/'.
     """
     if not raw.startswith(_URL_PREFIX):
         return None
-    rest = raw[len(_URL_PREFIX):]
+    rest = raw[len(_URL_PREFIX):].split("&", 1)[0]
     if rest.split(".", 1)[0] not in _HOST_NAMES:
         return None
     video_id = re.split(r"[=/]", rest)[-1]
