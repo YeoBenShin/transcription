@@ -3,13 +3,13 @@
 import re
 from typing import Optional
 
-from app.models import Options, Transcript, folder_name
-from app.stages.common.audio_file import AUDIO_STEM, find_audio
+from app.models import Options, Transcript, output_name
+from app.stages.common.audio_file import find_audio
 from app.stages.common.retry import retry
 from app.stages.youtube.captions import fetch_captions
 from app.stages.youtube.download import download_audio
-from app.stages.common.transcribe import transcribe
-from app.stages.youtube.video_title import fetch_video_title
+from app.stages.common.transcribe import partial_path, transcribe
+from app.stages.youtube.video_info import fetch_video_info
 
 _URL_PREFIX = "https://www."
 _HOST_NAMES = ("youtube", "youtu")
@@ -43,21 +43,23 @@ class YouTubeSource:
     def get_transcript(self, raw: str, options: Options) -> Optional[Transcript]:
         video_id = parse_video_id(raw)
         assert video_id is not None
-        title = fetch_video_title(video_id)
+        info = fetch_video_info(video_id)
+        name = output_name(info.published, info.channel, info.title, video_id)
 
         lines = fetch_captions(video_id)
         if lines:
-            return Transcript(video_id, lines, origin="youtube captions", title=title)
+            return Transcript(video_id, lines, origin="youtube captions", name=name)
 
         print("falling back to audio")
-        workdir = options.outdir / folder_name(title, video_id)
+        temp = options.temp_dir
         url = f"https://www.youtube.com/watch?v={video_id}"
 
         def download_and_transcribe():
-            audio = find_audio(workdir) or download_audio(url, workdir, AUDIO_STEM)
-            return audio, transcribe(audio, options.model, workdir, video_id)
+            temp.mkdir(parents=True, exist_ok=True)
+            audio = find_audio(temp, name) or download_audio(url, temp, name)
+            return audio, transcribe(audio, options.model, partial_path(temp, name), video_id)
 
         audio, lines = retry(download_and_transcribe)
         if not lines:
             return None
-        return Transcript(video_id, lines, origin="faster-whisper", title=title, downloaded_audio=audio)
+        return Transcript(video_id, lines, origin="faster-whisper", name=name, downloaded_audio=audio)

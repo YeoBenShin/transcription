@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 from app.models import TARGET_LANGUAGE, Line, clean, timestamp
 
 SAMPLE_RATE = 16000  # faster-whisper decodes all audio to 16 kHz mono
-PARTIAL_NAME = "full.partial.jsonl"
+PARTIAL_SUFFIX = ".partial.jsonl"
 PROMPT_LINES = 5
 MIN_REMAINING_SECONDS = 0.5
 
@@ -20,6 +20,11 @@ def load_model(model_size: str):
     from faster_whisper import WhisperModel
 
     return WhisperModel(model_size, device="cpu", compute_type="int8")
+
+
+def partial_path(temp_dir: Path, name: str) -> Path:
+    """Return the progress file path for output name `name`: temp_dir/<name>.partial.jsonl."""
+    return temp_dir / f"{name}{PARTIAL_SUFFIX}"
 
 
 def decode(audio: Path):
@@ -103,15 +108,14 @@ def open_partial(partial: Path, header: dict, resume: bool):
     return partial.open("a", encoding="utf-8")
 
 
-def transcribe(audio: Path, model_size: str, workdir: Path, source_id: str) -> List[Line]:
+def transcribe(audio: Path, model_size: str, partial: Path, source_id: str) -> List[Line]:
     """Transcribe an audio or video file into timestamped lines.
 
-    Each segment is appended to workdir/full.partial.jsonl as it is made. If that file already
+    Each segment is appended to the `partial` progress file as it is made. If that file already
     has lines for the same model, source_id and audio, transcription continues from the end of
     the last saved line, with the last PROMPT_LINES lines as initial_prompt.
     """
-    workdir.mkdir(parents=True, exist_ok=True)
-    partial = workdir / PARTIAL_NAME
+    partial.parent.mkdir(parents=True, exist_ok=True)
     samples = decode(audio)
     header = make_header(model_size, source_id, audio, len(samples))
 

@@ -6,12 +6,12 @@
 browser ── frontend/ (index.html, style.css, app.js)
    │  POST /api/jobs {url, model}
    │  GET  /api/jobs                (poll)
-   │  GET  /files/<folder>/<name>.txt[?download]
+   │  GET  /files/<name>.txt[?download]
    ▼
 backend/server.py ──► backend/runner.py ──► subprocess: python -u -m app <url> --outdir .. --model ..
                                                │
                                                ▼
-                                         <outdir>/<folder>/*.txt
+                                         <outdir>/<name>.txt
 ```
 
 | File | Role |

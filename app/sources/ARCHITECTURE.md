@@ -11,8 +11,8 @@ Each source implements the `Source` protocol in `base.py`:
 
 | Source | Matches | Stages |
 |---|---|---|
-| `LocalFileSource` | path to a file that exists | transcribe |
-| `YouTubeSource` | full URL that starts with `https://www.youtube.` or `https://www.youtu.be`, with the 11-character id after the last `=` or `/`; text from the first `&` is removed | captions; if none: download, then transcribe |
+| `LocalFileSource` | path to a file that exists | local `file_info`, then transcribe |
+| `YouTubeSource` | full URL that starts with `https://www.youtube.` or `https://www.youtu.be`, with the 11-character id after the last `=` or `/`; text from the first `&` is removed | `video_info`, then captions; if none: download, then transcribe |
 | `SpotifySource` | `https://open.spotify.com/episode/<22-char id>`, optional `intl-xx/` and query string | spotify_episode, podcast_feed; then feed_transcript if the item has a timestamped transcript; else `http.download_file` of the enclosure, then transcribe |
 
 To add a source: make a module with a class that has the 3 members above, then add an instance to `SOURCES`.
@@ -27,5 +27,7 @@ To add a source: make a module with a class that has the 3 members above, then a
 - Spotify does not give the audio or a transcript without a login. Most shows on Spotify also publish a public RSS feed, so the Spotify source uses Spotify only for the episode title and show name, and gets everything else from the feed.
 - The Spotify source accepts episode URLs only. A show URL does not identify one episode.
 - The Spotify source tries the feed transcript before Whisper, for the same reason as YouTube captions: it is free and fast, and the publisher made it from the real audio.
-- The YouTube and Spotify sources download audio as `audio.<ext>` into the output folder. If a completed `audio.<ext>` is already there, they use it and do not download again. `pipeline.run` deletes it after `full.txt` is written. The local file source never deletes the input file.
+- Each source makes the output name (`models.output_name`) before captions or Whisper: YouTube from upload date, channel, title; Spotify from release date, show, episode title; local file from tag or file date, artist tag, file name.
+- The YouTube and Spotify sources download audio as `<outdir>/temp/<name>.<ext>`. If a completed file with that name is already there, they use it and do not download again. `pipeline.run` deletes it after `<name>.txt` is written. The local file source never deletes the input file.
+- The local file title is the file name, not the `title` tag. The user named the file, and the transcript name must be easy to match to it.
 - The Whisper path (download + transcribe) runs inside `retry`. Caption and feed-transcript paths do not retry.

@@ -6,16 +6,17 @@ Each stage does one thing. Stages are grouped by which sources use them:
 
 | Folder | Used by | Stages |
 |---|---|---|
-| `youtube/` | `sources/youtube.py` only | `video_title`, `captions`, `download` |
+| `youtube/` | `sources/youtube.py` only | `video_info`, `captions`, `download` |
+| `local/` | `sources/local_file.py` only | `file_info` |
 | `spotify/` | `sources/spotify.py` only | `spotify_episode`, `podcast_feed`, `feed_transcript` |
 | `common/` | more than one source, or `pipeline.py` for all sources | `http`, `transcribe`, `chunk` (not used now), `write` |
 
 Import rules:
 - Stages do not import from `sources/` or `pipeline.py`.
-- `youtube/` and `spotify/` stages can import from `common/`. They do not import from each other.
-- `common/` stages do not import from `youtube/` or `spotify/`.
+- `youtube/`, `spotify/` and `local/` stages can import from `common/`. They do not import from each other.
+- `common/` stages do not import from `youtube/`, `spotify/` or `local/`.
 
-Details: `youtube/ARCHITECTURE.md`, `spotify/ARCHITECTURE.md`, `common/ARCHITECTURE.md`.
+Details: `youtube/ARCHITECTURE.md`, `spotify/ARCHITECTURE.md`, `local/ARCHITECTURE.md`, `common/ARCHITECTURE.md`.
 
 ## Decisions
 

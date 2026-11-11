@@ -61,6 +61,15 @@ Use this instead of `winget configure` when Python 3.13 is already installed, or
 - `deactivate` leaves the venv.
 - Activation is optional. The wrapper scripts and the `.venv\Scripts\python` commands below use the venv without it.
 
+## Tests
+
+```sh
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest tests
+```
+
+- `tests/test_output_files.py`: output file name, header line, name conflicts (`<name>-<id>.txt`), and `temp/` cleanup. Uses a fake source through `pipeline.run`. No network, no Whisper.
+
 ## Method 1: CLI
 
 ### One input: `python -m app`
@@ -95,25 +104,36 @@ Supported `<input>`:
 
 ## Output
 
-`<outdir>/<name>/` contains:
-- `full.txt`: all lines
+The transcript is `<outdir>/<name>.txt`. There is no folder per transcript.
 
-While Whisper runs, the folder also contains:
-- `full.partial.jsonl`: each line Whisper has made so far.
-- `audio.<ext>`: the downloaded audio (YouTube and Spotify only).
+`<name>` is `YYYYMMDD-Author-Title`:
 
-Both are removed after `full.txt` is written.
+| Input | YYYYMMDD | Author | Title |
+|---|---|---|---|
+| YouTube | upload date | channel | video title |
+| Spotify | release date | show name | episode title |
+| Local file | `date` or `creation_time` tag of the file, else the file creation date (modification date if the OS has no creation date) | `artist`, `album_artist`, `author` or `composer` tag, else `Unknown` | file name without extension |
+
+- No date gives `00000000`. No author gives `Unknown`. No title gives the video or episode id.
+- Characters not allowed in file names are removed. The author is cut to 60 characters, the title to 120.
+- Example: `20261031-mira-Creating a C HTTP Server to query a Minecraft Chest.txt`.
+
+The first line of the file is `<name>-<id>`, then a blank line, then the transcript. `<id>` is the YouTube video id, the Spotify episode id, or the local file name without extension.
+
+If `<name>.txt` already exists with a different first line (another input with the same date, author and title), the new transcript is written as `<name>-<id>.txt`. The existing file is not changed. A run of the same input again replaces its own file.
+
+While Whisper runs, `<outdir>/temp/` contains:
+- `<name>.partial.jsonl`: each line Whisper has made so far.
+- `<name>.<ext>`: the downloaded audio (YouTube and Spotify only).
+
+Both are removed after `<name>.txt` is written. `temp/` is removed when it is empty.
 
 ### Failures and resume
 
 - A Whisper failure is retried 2 times, after 2 s and 4 s. After 3 failed attempts the run stops with `failed after 3 attempts: ...` and exit code 1. Ctrl+C stops at once, with no retry.
-- To resume, run the same input again (same URL, or the same file in the inbox). If `full.partial.jsonl` is in the folder, Whisper continues from the last saved line. The audio is not downloaded again.
-- If `--model` is different or the audio file is different, the resume is not used, and Whisper starts again from the beginning
-- If the title cannot be fetched, the folder name is different (id only), so a resume does not find the earlier progress.
-
-`name` is `<title> [<id>]` for YouTube and Spotify (for example `Creating a C HTTP Server [JT9JI_SMHk4]`), or the file name without its extension for a local file. 
-
-Characters not allowed in file names are removed from the title, and the title is cut to 120 characters. If the title cannot be fetched, `name` is only the video or episode id. 
+- To resume, run the same input again (same URL, or the same file in the inbox). If `temp/<name>.partial.jsonl` exists, Whisper continues from the last saved line. If `temp/<name>.<ext>` exists, the audio is not downloaded again.
+- A resume needs the same `<name>` and the same `--model` (in the header line of the `.partial.jsonl`). The audio file must also be the same. If one is different, Whisper starts again from the beginning.
+- If the date, author or title cannot be fetched on one run, `<name>` is different, so that run does not find the earlier progress.
 
 ## Method 2: Wrapper scripts
 
@@ -216,8 +236,8 @@ Run them from the project folder:
 - `app/batch.py`: command line for a folder. Calls `pipeline.run` once per file.
 - `app/web/`: local web page. `backend/` runs `python -m app` per URL. `frontend/` is static HTML, CSS, JS.
 - `bin/transcribe-web`, `bin/transcribe-batch`: executable wrappers for `app.web` and `app.batch`.
-- `app/pipeline.py`: picks a source for the input, then writes `full.txt`.
+- `app/pipeline.py`: picks a source for the input, then writes `<outdir>/YYYYMMDD-Author-Title.txt`.
 - `app/sources/`: one module per input type. Each one decides which stages to run.
-- `app/stages/`: single-purpose steps. `youtube/` (title, captions, download) and `spotify/` (Spotify metadata, RSS feed lookup, feed transcript) hold stages for one source; `common/` holds stages for more than one (http, transcribe, write; chunk is not used now).
+- `app/stages/`: single-purpose steps. `youtube/` (date/channel/title, captions, download), `spotify/` (Spotify metadata, RSS feed lookup, feed transcript) and `local/` (file date and author tags) hold stages for one source; `common/` holds stages for more than one (http, transcribe, write; chunk is not used now).
 
 See `ARCHITECTURE.md` in each folder.

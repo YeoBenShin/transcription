@@ -8,7 +8,7 @@ from app.models import Options, Transcript
 from app.sources import SOURCES
 from app.sources.base import Source
 from app.stages.common.retry import GaveUp
-from app.stages.common.transcribe import PARTIAL_NAME
+from app.stages.common.transcribe import partial_path
 from app.stages.common.write import write_full
 
 
@@ -37,9 +37,10 @@ def route(raw: str, sources: Optional[List[Source]] = None) -> Source:
 
 
 def run(raw: str, options: Options) -> Result:
-    """Get a transcript for any supported input and write it as full.txt.
+    """Get a transcript for any supported input and write it with write_full.
 
-    After full.txt is written, remove the Whisper progress file and the downloaded audio.
+    After the .txt is written, remove the Whisper progress file and the downloaded audio,
+    then the temp folder if it is empty.
     Raise GaveUp if the Whisper path failed on every attempt.
     """
     source = route(raw)
@@ -48,8 +49,12 @@ def run(raw: str, options: Options) -> Result:
     if transcript is None or not transcript.lines:
         raise NoTranscript(f"no transcript could be produced for {raw!r}")
 
-    paths = write_full(transcript.lines, transcript.folder_name, options.outdir)
-    (options.outdir / transcript.folder_name / PARTIAL_NAME).unlink(missing_ok=True)
+    paths = write_full(transcript.lines, transcript.name, transcript.source_id, options.outdir)
+    partial_path(options.temp_dir, transcript.name).unlink(missing_ok=True)
     if transcript.downloaded_audio is not None:
         transcript.downloaded_audio.unlink(missing_ok=True)
+    try:
+        options.temp_dir.rmdir()
+    except OSError:
+        pass
     return Result(transcript, paths)

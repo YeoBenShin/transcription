@@ -7,12 +7,13 @@ def download_audio(url: str, directory: Path, stem: str) -> Path:
     """Save the best audio stream of `url` as directory/stem.<ext> without re-encoding.
 
     yt-dlp writes to a .part file and renames it when the download is complete.
+    '%' in the path is escaped, because yt-dlp reads it as a template field.
     """
     from yt_dlp import YoutubeDL
 
     options = {
         "format": "bestaudio/best",
-        "outtmpl": str(directory / f"{stem}.%(ext)s"),
+        "outtmpl": str(directory / stem).replace("%", "%%") + ".%(ext)s",
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
