@@ -6,6 +6,7 @@ from typing import Optional
 from app.models import Options, Transcript, output_name
 from app.stages.common.audio_file import find_audio
 from app.stages.common.retry import retry
+from app.stages.common import temp_files
 from app.stages.youtube.captions import fetch_captions
 from app.stages.youtube.download import download_audio
 from app.stages.common.transcribe import partial_path, transcribe
@@ -51,6 +52,7 @@ class YouTubeSource:
             return Transcript(video_id, lines, origin="youtube captions", name=name)
 
         print("falling back to audio")
+        temp_files.announce(name)
         temp = options.temp_dir
         url = f"https://www.youtube.com/watch?v={video_id}"
 

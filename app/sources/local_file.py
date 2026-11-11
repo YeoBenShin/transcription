@@ -5,6 +5,7 @@ from typing import Optional
 
 from app.models import Options, Transcript, output_name
 from app.stages.common.retry import retry
+from app.stages.common import temp_files
 from app.stages.common.transcribe import partial_path, transcribe
 from app.stages.local.file_info import fetch_file_info
 
@@ -19,6 +20,7 @@ class LocalFileSource:
         path = Path(raw).expanduser()
         info = fetch_file_info(path)
         name = output_name(info.recorded, info.author, path.stem, path.stem)
+        temp_files.announce(name)
         partial = partial_path(options.temp_dir, name)
         lines = retry(lambda: transcribe(path, options.model, partial, path.stem))
         if not lines:

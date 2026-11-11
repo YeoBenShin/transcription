@@ -13,6 +13,9 @@
 | temp cleanup | progress file and downloaded audio removed; `temp/` removed only when empty |
 | `output_name` | missing date, author, title; unsafe characters |
 
+- `test_podcast_feed_search.py` replaces `podcast_feed._apple_search` with fixed results and tests the feed order of `search_feed_urls`: episode-title match first, then show-name match, no duplicates, at most `MAX_FEEDS`. It also tests that a failed request gives no results.
+- `test_temp_files.py` tests `temp_files.work_files` and `temp_files.name_from_log` on files in `tmp_path`. These find the work files that the web Delete button removes.
+
 ## Decisions
 
 - Tests go through `pipeline.run`, not `write_full` alone. Thus they cover the same write and cleanup steps as a real run.

@@ -8,6 +8,7 @@ import requests
 from app.models import Options, Transcript, output_name
 from app.stages.common.audio_file import find_audio
 from app.stages.common.retry import retry
+from app.stages.common import temp_files
 from app.stages.spotify.feed_transcript import fetch_feed_transcript, pick_transcript
 from app.stages.common.http import download_file
 from app.stages.spotify.podcast_feed import find_feed_episode
@@ -57,6 +58,7 @@ class SpotifySource:
             print("feed item has no audio enclosure")
             return None
         print("falling back to audio")
+        temp_files.announce(name)
         temp = options.temp_dir
 
         def download_and_transcribe():

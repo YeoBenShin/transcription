@@ -69,6 +69,7 @@ Use this instead of `winget configure` when Python 3.13 is already installed, or
 ```
 
 - `tests/test_output_files.py`: output file name, header line, name conflicts (`<name>-<id>.txt`), and `temp/` cleanup. Uses a fake source through `pipeline.run`. No network, no Whisper.
+- `tests/test_temp_files.py`: which files in `temp/` belong to one `<name>` (used by the web Delete button).
 
 ## Method 1: CLI
 
@@ -156,6 +157,9 @@ Double-click the script in Finder (macOS) or File Explorer (Windows). It also ru
 - Open `http://127.0.0.1:8000`. Paste a YouTube or Spotify episode URL, set Whisper model, click Transcribe.
 - Each submit runs `python -m app <url> ...` as a subprocess. Output files are the same as the CLI, in the same `--outdir`.
 - Jobs run one at a time. Others wait as `queued`. The page shows the live CLI log and links to view or download each `.txt`.
+- **Stop** (queued or running job): kills the CLI process. Status becomes `stopped`. The files in `temp/` stay. The page lists them for stopped and failed jobs.
+- **Continue** (stopped or failed job): puts the same URL and model back in the queue. Whisper resumes from `temp/` (see [Failures and resume](#failures-and-resume)).
+- **Delete** (stopped or failed job): asks for confirmation, removes that job's files from `temp/`, and removes the job from the list. Refused while a queued or running job has the same URL.
 - Job list is in memory only. A server restart clears the list, not the files.
 - Listens on `127.0.0.1` only. No authentication.
 - Stop the server with Ctrl+C, or close the terminal window.

@@ -14,6 +14,28 @@ $("form").addEventListener("submit", async (e) => {
   refresh();
 });
 
+async function act(id, action) {
+  if (action === "delete" && !confirm("Delete the temp files of this transcription?")) return;
+  $("error").textContent = "";
+  const res = await fetch(`/api/jobs/${id}/${action}`, { method: "POST" });
+  if (!res.ok) $("error").textContent = (await res.json()).error;
+  refresh();
+}
+
+$("jobs").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-action]");
+  if (b) { b.disabled = true; act(b.closest(".job").dataset.id, b.dataset.action); }
+});
+
+function actions(j) {
+  if (j.status === "queued" || j.status === "running") return `<button class="small" data-action="stop">Stop</button>`;
+  if (j.status === "stopped" || j.status === "failed") {
+    return `<button class="small" data-action="continue">Continue</button>`
+      + `<button class="small danger" data-action="delete">Delete</button>`;
+  }
+  return "";
+}
+
 function duration(sec) {
   const t = Math.floor(sec), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = String(t % 60).padStart(2, "0");
   return h ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
@@ -33,9 +55,10 @@ function render(jobs) {
       return `<li><span class="name">${esc(f)}</span><a href="${href}" target="_blank">view</a></li>`;
     }).join("");
     const logOpen = openLogs.has(j.id) || j.status === "running" || j.status === "failed";
-    return `<div class="job">
-      <header><span class="url">${esc(j.url)}</span>${j.elapsed == null ? "" : `<span class="elapsed">${duration(j.elapsed)}</span>`}<span class="status ${j.status}">${j.status}</span></header>
-      ${files ? `<ul class="files">${files}</ul>` : ""}
+    const temp = j.temp_files.length ? `<div class="temp">temp: ${j.temp_files.map(esc).join(", ")}</div>` : "";
+    return `<div class="job" data-id="${j.id}">
+      <header><span class="url">${esc(j.url)}</span>${j.elapsed == null ? "" : `<span class="elapsed">${duration(j.elapsed)}</span>`}<span class="status ${j.status}">${j.status}</span>${actions(j)}</header>
+      ${files ? `<ul class="files">${files}</ul>` : ""}${temp}
       ${j.log ? `<details data-id="${j.id}" ${logOpen ? "open" : ""}><summary>log</summary><pre>${esc(j.log)}</pre></details>` : ""}
     </div>`;
   }).join("");
@@ -46,9 +69,12 @@ function render(jobs) {
   });
 }
 
+let lastBody = "";
+
 async function refresh() {
-  const jobs = await (await fetch("/api/jobs")).json();
-  render(jobs);
+  const body = await (await fetch("/api/jobs")).text();
+  const jobs = JSON.parse(body);
+  if (body !== lastBody) { lastBody = body; render(jobs); }
   return jobs.some((j) => j.status === "queued" || j.status === "running");
 }
 

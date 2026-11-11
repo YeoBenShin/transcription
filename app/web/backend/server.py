@@ -14,6 +14,7 @@ STATIC_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
 }
+ACTIONS = {"stop": "stop", "continue": "resume", "delete": "delete"}  # POST /api/jobs/<id>/<action> -> Runner method
 
 
 def make_handler(runner: Runner):
@@ -58,6 +59,17 @@ def make_handler(runner: Runner):
                 self._json(404, {"error": "not found"})
 
         def do_POST(self):
+            parts = self.path.split("/")
+            if len(parts) == 5 and parts[:3] == ["", "api", "jobs"] and parts[4] in ACTIONS:
+                if runner.get(parts[3]) is None:
+                    self._json(404, {"error": "no such job"})
+                    return
+                error = getattr(runner, ACTIONS[parts[4]])(parts[3])
+                if error:
+                    self._json(409, {"error": error})
+                else:
+                    self._json(200, {"ok": True})
+                return
             if self.path != "/api/jobs":
                 self._json(404, {"error": "not found"})
                 return

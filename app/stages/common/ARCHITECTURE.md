@@ -10,6 +10,9 @@ Stages used by more than one source, or by the pipeline for all sources. `http` 
 | `audio_file.find_audio` | folder, file stem | path of a completed `<stem>.<ext>`, or `None` |
 | `transcribe.partial_path` | temp folder, output name | `<temp>/<name>.partial.jsonl` |
 | `transcribe.transcribe` | audio/video file path, model size, progress file path, source id | `List[Line]`. Saves each line to the progress file and resumes from it |
+| `temp_files.announce` | output name | prints `temp name: <name>` |
+| `temp_files.name_from_log` | CLI log text | `<name>` from the last complete `temp name:` line, or `''` |
+| `temp_files.work_files` | temp folder, output name | `<name>.partial.jsonl`, `<name>.<ext>`, `<name>.<ext>.part/.ytdl/.tmp` that exist |
 | `retry.retry` | function | its result. Raises `GaveUp` after 3 failed attempts |
 | `chunk.chunk` (not used now) | lines, window length in seconds | `List[List[Line]]` |
 | `write.write_chunks` (not used now) | chunks, folder name, window length, outdir | written file paths |
@@ -189,6 +192,11 @@ import assemblyai as aai
 transcript = aai.Transcriber().transcribe(path, config=aai.TranscriptionConfig(speaker_labels=True, language_code="en"))
 # transcript.utterances: each has .start (ms), .speaker, .text
 ```
+
+### temp_files
+- Each source calls `announce(name)` before it writes to `temp/`. The web runner runs the CLI as a subprocess and knows only its log, so this line is how it finds the job's work files for Delete.
+- `work_files` compares names as text, like `find_audio`. `<ext>` must have no dot, so `<name>. Other.webm` (a different title that starts with the same text) does not match.
+- Incomplete downloads (`.part`, `.ytdl`, `.tmp`) are included. A Stop during a download leaves them.
 
 ### retry
 - Catches `Exception` only. `KeyboardInterrupt` is a `BaseException`, so Ctrl+C stops at once.
