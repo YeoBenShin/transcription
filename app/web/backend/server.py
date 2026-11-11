@@ -52,7 +52,7 @@ def make_handler(runner: Runner):
                 if not target.is_relative_to(outdir) or not target.is_file() or target.suffix != ".txt":
                     self._json(404, {"error": "not found"})
                     return
-                download = f"{target.parent.name}_{target.name}" if "download" in query else ""
+                download = target.name if "download" in query else ""
                 self._send(200, target.read_bytes(), "text/plain; charset=utf-8", download)
             else:
                 self._json(404, {"error": "not found"})

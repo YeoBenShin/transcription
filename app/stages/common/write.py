@@ -1,9 +1,9 @@
 """Stage: write transcript .txt files."""
 
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
-from app.models import Line, timestamp
+from app.models import Line, safe_name, timestamp
 
 
 def write_chunks(
@@ -36,12 +36,37 @@ def write_chunks(
     return paths
 
 
-def write_full(lines: List[Line], name: str, outdir: Path) -> List[Path]:
-    """Write full.txt into outdir/name. Write a temp file first, then rename it to full.txt."""
-    directory = outdir / name
-    directory.mkdir(parents=True, exist_ok=True)
-    full = directory / "full.txt"
+def first_line(path: Path) -> Optional[str]:
+    """Return the first line of path without its newline, or None if the file is missing."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            return handle.readline().rstrip("\n")
+    except FileNotFoundError:
+        return None
+
+
+def full_path(name: str, source_id: str, outdir: Path) -> Path:
+    """Return the transcript path for this input.
+
+    outdir/<name>.txt if it does not exist or its header is <name>-<source_id>.
+    Else outdir/<name>-<source_id>.txt.
+    """
+    full = outdir / f"{name}.txt"
+    header = first_line(full)
+    if header is None or header == f"{name}-{source_id}":
+        return full
+    return outdir / f"{name}-{safe_name(source_id)}.txt"
+
+
+def write_full(lines: List[Line], name: str, source_id: str, outdir: Path) -> List[Path]:
+    """Write the transcript with the header line '<name>-<source_id>', then a blank line.
+
+    The path comes from full_path. Write a .tmp file first, then rename it.
+    """
+    outdir.mkdir(parents=True, exist_ok=True)
+    full = full_path(name, source_id, outdir)
+    body = "\n".join(f"[{timestamp(l.start)}] {l.text}" for l in lines)
     tmp = full.with_name(full.name + ".tmp")
-    tmp.write_text("\n".join(f"[{timestamp(l.start)}] {l.text}" for l in lines) + "\n")
+    tmp.write_text(f"{name}-{source_id}\n\n{body}\n", encoding="utf-8")
     tmp.replace(full)
     return [full]

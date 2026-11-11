@@ -5,14 +5,14 @@ from typing import Optional
 
 import requests
 
-from app.models import Options, Transcript, folder_name
-from app.stages.common.audio_file import AUDIO_STEM, find_audio
+from app.models import Options, Transcript, output_name
+from app.stages.common.audio_file import find_audio
 from app.stages.common.retry import retry
 from app.stages.spotify.feed_transcript import fetch_feed_transcript, pick_transcript
 from app.stages.common.http import download_file
 from app.stages.spotify.podcast_feed import find_feed_episode
 from app.stages.spotify.spotify_episode import fetch_spotify_episode
-from app.stages.common.transcribe import transcribe
+from app.stages.common.transcribe import partial_path, transcribe
 
 _URL = re.compile(r"https://open\.spotify\.com/(?:intl-[a-z-]+/)?episode/([0-9A-Za-z]{22})(?:[?#].*)?")
 
@@ -42,28 +42,31 @@ class SpotifySource:
         if episode is None:
             return None
 
+        published = spotify.released.date() if spotify.released else None
+        name = output_name(published, spotify.show, spotify.title, episode_id)
+
         link = pick_transcript(episode.transcripts)
         if link is not None:
             lines = fetch_feed_transcript(link)
             if lines:
                 return Transcript(
-                    episode_id, lines, origin=f"feed transcript ({link.mime_type})", title=spotify.title
+                    episode_id, lines, origin=f"feed transcript ({link.mime_type})", name=name
                 )
 
         if not episode.enclosure_url:
             print("feed item has no audio enclosure")
             return None
         print("falling back to audio")
-        workdir = options.outdir / folder_name(spotify.title, episode_id)
-        workdir.mkdir(parents=True, exist_ok=True)
+        temp = options.temp_dir
 
         def download_and_transcribe():
-            audio = find_audio(workdir) or download_file(episode.enclosure_url, workdir, AUDIO_STEM)
-            return audio, transcribe(audio, options.model, workdir, episode_id)
+            temp.mkdir(parents=True, exist_ok=True)
+            audio = find_audio(temp, name) or download_file(episode.enclosure_url, temp, name)
+            return audio, transcribe(audio, options.model, partial_path(temp, name), episode_id)
 
         audio, lines = retry(download_and_transcribe)
         if not lines:
             return None
         return Transcript(
-            episode_id, lines, origin="faster-whisper", title=spotify.title, downloaded_audio=audio
+            episode_id, lines, origin="faster-whisper", name=name, downloaded_audio=audio
         )

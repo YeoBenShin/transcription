@@ -3,9 +3,10 @@
 from pathlib import Path
 from typing import Optional
 
-from app.models import Options, Transcript, folder_name
+from app.models import Options, Transcript, output_name
 from app.stages.common.retry import retry
-from app.stages.common.transcribe import transcribe
+from app.stages.common.transcribe import partial_path, transcribe
+from app.stages.local.file_info import fetch_file_info
 
 
 class LocalFileSource:
@@ -16,8 +17,10 @@ class LocalFileSource:
 
     def get_transcript(self, raw: str, options: Options) -> Optional[Transcript]:
         path = Path(raw).expanduser()
-        workdir = options.outdir / folder_name(None, path.stem)
-        lines = retry(lambda: transcribe(path, options.model, workdir, path.stem))
+        info = fetch_file_info(path)
+        name = output_name(info.recorded, info.author, path.stem, path.stem)
+        partial = partial_path(options.temp_dir, name)
+        lines = retry(lambda: transcribe(path, options.model, partial, path.stem))
         if not lines:
             return None
-        return Transcript(path.stem, lines, origin="faster-whisper")
+        return Transcript(path.stem, lines, origin="faster-whisper", name=name)
