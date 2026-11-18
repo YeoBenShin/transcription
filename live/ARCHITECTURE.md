@@ -32,18 +32,25 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 | `cli.py` | `start` (spawn both children, handle Ctrl+C, restart a failed transcriber, then finalize), `finalize`, `devices`. |
 | `recorder.py` | Audio callback puts each block on a queue. Main thread gives blocks to `RunWriter`, which appends each one to the run file (raw float32) and flushes it to the OS. One run file per recorder run. Stops when stdin closes. Logs input overflow and 30 s of silence. |
 | `session.py` | Folder layout, run file names, `Timeline` (run files end to end on one audio time axis, gaps), pid claims. |
-| `transcriber.py` | Poll loop. Each pass: span from the last committed `end`, `read_16k`, backend, `choose` what to commit, append to progress, rewrite `<name>.txt`, print new lines. |
+| `transcriber.py` | Poll loop. Each pass: span from the last committed `end`, `read_16k`, backend, `Agreement.step` decides which words to write, append to progress, rewrite `<name>.txt`, print new lines, show the words not written as the draft line. |
+| `console.py` | Terminal output of all live processes: `say` (fixed line) and `Draft` (one line that is replaced; agreed words plain, tail dim). |
 | `progress.py` | Append-only JSONL with fsync per write. Truncates a line cut short by a crash. |
 | `audio.py` | `read_16k` (span of the timeline as 16 kHz mono, by seek in the run files), `merge` (all run files into one FLAC in blocks, decode again to check the frame count). |
 | `finalize.py` | Mark stopped, run the transcriber in this process until done, merge, clean up. |
 | `backends/` | Speech-to-text backends behind one interface. See `backends/ARCHITECTURE.md`. |
 
-### Commit rules (`transcriber.choose`, `plan_span`)
+### Commit rules (`transcriber.Agreement`, `plan_span`)
 
-- A span starts at the last committed `end` and is at most 30 s. It ends early at the next recording gap.
-- Normal pass: commit all segments except the last. The last one is also committed if it ends 1.5 s or more before the span end (speech stopped), or if the span is capped at 30 s and it is the only segment.
-- No segment at all: mark the audio done up to span end - 2 s, with a record that has text `""`.
-- Final pass (a stopped session reaches its end, or the span ends at a gap): commit all and mark done to the span end.
+- A span starts at the last written line `end` and is at most 30 s. It ends early at the next recording gap.
+- The backend gives words with times. `Agreement` keeps in memory the words after the last written line: `agreed` (2 passes in a row gave them in the same order, compared by letters and digits only) and `tail` (the rest of the last pass, which can still change).
+- A pass gives the agreed words again, because it starts at the last written line. Words that start before the last agreed word end (- 0.1 s) are removed, then up to 5 words at the start that repeat the end of the agreed words. The words left are compared with the tail. Their common start becomes agreed.
+- Normal pass, written as lines (one per sentence: a line ends at a word with `.`, `?` or `!`):
+  - all words, if the last word ends 1.5 s or more before the span end (speech stopped);
+  - all words except the last, if the span is capped at 30 s;
+  - else the agreed words up to the last sentence end. If there is none and the agreed words cover 8 s or more: up to the last `,` `;` `:`, or all agreed words.
+- No word at all: mark the audio done up to span end - 2 s, with a record that has text `""`.
+- Final pass (a stopped session reaches its end, or the span ends at a gap): write all words, mark done to the span end, and empty `agreed` and `tail`.
+- The draft line shows the agreed words not yet written (plain) and the tail (dim).
 - A pass runs only when the timeline grew 1 s or more since the last pass, or the backlog is more than 30 s, or the session is stopped. The folder is polled each 0.2 s.
 
 ### Time
@@ -75,7 +82,7 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 - Float32 as from the audio callback, so the recorder does no conversion per block. The rate and channels are in the name, because the file has no header.
 - Cost: disk during the recording is about 1.4 GB per hour at 48 kHz stereo (FLAC 24-bit: about 0.45 GB per hour). Raw PCM has no checksum; the merge still decodes the result again and checks the frame count.
 - One file per run, not one per fixed length: a new file is needed only where the wall time can jump (a new run). No file size limit applies on APFS or NTFS.
-- End-to-end test (2 min 36 s of speech played into BlackHole, `base` model), delay from the end of a spoken line to its print: 5 s FLAC snippets: median 6.3 s, p90 22.8 s, max 37.0 s. Raw PCM: median 3.6 s, p90 7.2 s, max 12.3 s. Most of the delay that is left comes from the commit rule (the last segment waits for the next one or for 1.5 s of silence).
+- End-to-end test (2 min 36 s of speech played into BlackHole, `base` model), delay from the end of a spoken line to its print: 5 s FLAC snippets: median 6.3 s, p90 22.8 s, max 37.0 s. Raw PCM: median 3.6 s, p90 7.2 s, max 12.3 s. Most of the delay that was left came from the segment commit rule. See "Commit rules" below for the word rule that replaced it.
 
 ### Polling, not push
 - The transcriber must scan the folder at start and after a crash anyway. A notification would be a second way to find the same files, and it is lost when the transcriber is down. Polling every 0.2 s adds at most 0.2 s; one Whisper pass takes about 0.5 s.
@@ -86,14 +93,35 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 - Silence is written as records with text `""`. Without them, the resume point would stay at the last speech and each pass would grow over all the silence after it.
 
 ### Commit rules
-- The last segment of a span can be a word cut at the span end, so it waits for more audio. It is committed early only when silence follows it.
-- "No speech" is decided only from no segments at all. A span with one uncommitted segment must not move forward: that skipped a full sentence in an end-to-end test.
+- The words at the end of a span can be cut at the span end, so they wait for more audio. A word is written only when 2 passes agree on it, or when silence follows.
+- The first rule committed by segment: all segments but the last. Whisper decides where a segment ends, and it often kept 2 or more sentences, 10 s or longer, as one segment. That segment was always the last one, so it waited. In the end-to-end test, a line showed only 14 s after speech started.
+- Agreement by word (the "LocalAgreement-2" method from the `whisper_streaming` project) writes a line soon after its last word is spoken, independent of where Whisper ends segments. Lines follow sentence ends, not segment ends, so each line is one sentence.
+- The span still starts at the last written line, not at the last agreed word. Thus Whisper hears full sentences, and a restart resumes from the progress file, with no state about agreed words on disk. Agreed words that are not written yet are only in memory. After a crash they are transcribed again.
+- Whisper on part of a sentence often writes a comma where the full sentence has a period. Thus long speech can have no agreed sentence end. The 8 s limit and the break at the last clause mark keep lines short. With 15 s and no clause break, a 17 s test clip gave no line until its end.
+- "No speech" is decided only from no words at all. A span with words that are not written must not move forward: that skipped a full sentence in an end-to-end test.
+- End-to-end test (73 s of real speech played into BlackHole, `base` model), delay from the last word of a line to its print, 2 runs each:
+
+  | Rule | Median | p90 | Max |
+  |---|---|---|---|
+  | segment | 2.8 s | 4.1-6.2 s | 10-11 s |
+  | word agreement | 2.4-3.2 s | 3.0-4.9 s | 4.0-5.5 s |
+
+  Segment lines were cut mid-sentence; word lines are one sentence each. The word rule includes the token cap in `backends/` (see there).
 - A span never crosses a recording gap. Across a gap, Whisper joined the last words of one run to the first words of the next.
 - The prompt (last 5 lines) uses only lines from the same recording run. With the text from before a gap as prompt, Whisper repeated the prompt instead of the new speech.
 
 ### Output
 - `<name>.txt` uses `app.stages.common.write.write_full`, so the format is the same as `python -m app` (header `<name>-live`, `[HH:MM:SS] text`). It is rewritten in full after each commit (atomic `.tmp` + rename), so it is always complete.
 - The live transcript is a draft. A better transcript comes from `python -m app` on the merged `.flac`, so there is no second pass here.
+
+### Draft line
+- A live caption must show text while the speaker talks. The commit rule holds words until they are agreed and a line is complete, so without a draft, text showed only when a line was written.
+- Commit of all words on each pass was rejected. A pass covers about 1 s of new audio and often ends mid-word. The saved lines would get broken or doubled words. The draft gives the same delay on the screen and keeps the commit rule.
+- Agreed words are plain and the tail is dim, so the reader sees which words can still change.
+- The draft is only on the screen. `<name>.txt` and the progress file get only committed lines.
+- All live processes write to one terminal. Each fixed line starts with carriage return + erase line, so a log line from the recorder or the parent replaces the draft and does not join it. The transcriber shows the draft again at its next pass.
+- The draft is cut to the terminal width, and keeps the end of the text. A draft that wraps cannot be erased with one erase line.
+- When stdout is not a terminal (a pipe or a file), no draft is written. Thus logs keep only fixed lines.
 
 ### Finalize
 - The merge writes `<name>.flac.tmp` (FLAC 24-bit), decodes it again and compares the frame count, then renames it. Run files are removed only after that. If the check fails, all work files stay.

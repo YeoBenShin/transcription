@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from live import backends
+from live import backends, console
 from live.audio import MergeFailed
 from live.finalize import finalize
 from live.session import AlreadyRunning, Session, running_pid
@@ -18,7 +18,7 @@ TRANSCRIBER_EXIT_WAIT = 30.0
 
 
 def log(message: str) -> None:
-    print(f"live: {message}", flush=True)
+    console.say(f"live: {message}")
 
 
 def spawn(module: str, args: list) -> subprocess.Popen:

@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from live import backends, transcriber
+from live import backends, console, transcriber
 from live.audio import merge
 from live.progress import read_header
 from live.session import AlreadyRunning, Session, claim, release, running_pid
@@ -47,5 +47,5 @@ def finalize(session: Session, backend_name: Optional[str] = None, model: Option
     timeline = session.timeline()
     if timeline.files:
         frames = merge(timeline.files, session.merged)
-        print(f"merged {len(timeline.files)} run file(s): {frames / timeline.files[0].rate:.1f} s")
+        console.say(f"merged {len(timeline.files)} run file(s): {frames / timeline.files[0].rate:.1f} s")
     cleanup(session)

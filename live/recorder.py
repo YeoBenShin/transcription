@@ -17,6 +17,7 @@ from typing import BinaryIO, Optional
 
 import numpy as np
 
+from live import console
 from live.session import PCM_DTYPE, AlreadyRunning, Session, claim, release, run_name
 
 SILENCE_PEAK = 1e-4
@@ -24,7 +25,7 @@ SILENCE_WARN_SECONDS = 30.0
 
 
 def log(message: str) -> None:
-    print(f"rec: {message}", flush=True)
+    console.say(f"rec: {message}")
 
 
 class RunWriter:

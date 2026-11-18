@@ -1,8 +1,8 @@
 """Speech-to-text backends, by name."""
 
-from live.backends.base import SAMPLE_RATE, Backend, Segment
+from live.backends.base import SAMPLE_RATE, Backend, Segment, Word
 
-__all__ = ["SAMPLE_RATE", "Backend", "Segment", "DEFAULT_BACKEND", "DEFAULT_MODEL", "names", "make"]
+__all__ = ["SAMPLE_RATE", "Backend", "Segment", "Word", "DEFAULT_BACKEND", "DEFAULT_MODEL", "names", "make"]
 
 DEFAULT_BACKEND = "faster-whisper"
 DEFAULT_MODEL = "base"

@@ -255,7 +255,7 @@ Transcribes the audio that an app plays (for example Zoom or Teams) while it pla
 .venv/bin/python -m live start [--label weekly-call] [--device BlackHole] [--model base] [--outdir out]
 ```
 
-- The terminal shows each transcript line as it is written: `[00:01:23] text`.
+- The terminal shows each transcript line as it is written: `[00:01:23] text`. The last line is the draft of the sentence that is still spoken. It changes about each second. Plain words in it are final; dim words can still change. It becomes a fixed line when the sentence is complete (about 2-3 s after its last word). Only fixed lines go into the `.txt`.
 - Ctrl+C stops the recording. The rest of the audio is transcribed, then the audio is merged into one `.flac`. A second Ctrl+C leaves this for later.
 - `--session <folder>` continues a session that is not finalized (for example after a crash). The transcript shows the missing time as `(recording gap HH:MM:SS)`.
 - `--backend` selects the speech-to-text backend. Only `faster-whisper` now.

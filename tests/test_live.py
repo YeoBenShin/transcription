@@ -4,6 +4,7 @@ No audio device and no Whisper. Run files are 16 kHz mono .pcm files whose sampl
 the timeline time / 1000, so a fake backend can read where its audio comes from.
 """
 
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -11,8 +12,9 @@ import numpy as np
 import pytest
 import soundfile
 
-from live import audio, backends, finalize as finalize_module, transcriber
-from live.backends import Segment
+from app.models import Line
+from live import audio, backends, console, finalize as finalize_module, transcriber
+from live.backends import Segment, Word
 from live.progress import Progress
 from live.recorder import RunWriter
 from live.session import Session, run_name
@@ -54,7 +56,11 @@ def grow(session: Session, seconds: float) -> None:
 
 
 class FakeBackend:
-    """Returns a 1.5 s segment every 2 s of audio. Text is 'at <timeline time of its start>'."""
+    """Returns a segment every 2 s of audio, 1.5 s long: words 'at' (0.5 s) and '<time>.' (1 s).
+
+    <time> is the timeline time of the segment start. A segment or word cut by the audio end is
+    shorter. A word that would start at the audio end is left out.
+    """
 
     name = "fake"
     model = "m"
@@ -67,10 +73,28 @@ class FakeBackend:
         length = len(samples) / RATE
         segments = []
         k = 0
-        while k * 2 + 1.5 <= length + 1e-9:
-            at = samples[int(k * 2 * RATE)] * 1000
-            segments.append(Segment(k * 2, k * 2 + 1.5, f"at {at:.1f}"))
+        while k * 2 < length - 1e-9:
+            start = k * 2
+            at = samples[int(start * RATE)] * 1000
+            words = [Word(start, min(start + 0.5, length), "at")]
+            if start + 0.5 < length - 1e-9:
+                words.append(Word(start + 0.5, min(start + 1.5, length), f"{at:.1f}."))
+            segments.append(Segment(start, words[-1].end, " ".join(w.text for w in words), words))
             k += 1
+        return segments
+
+
+class GrowingBackend(FakeBackend):
+    """FakeBackend that adds `seconds` of audio to the session after each call, as a recorder does."""
+
+    def __init__(self, session, seconds=1.0):
+        super().__init__()
+        self.session = session
+        self.seconds = seconds
+
+    def transcribe(self, samples, prompt):
+        segments = super().transcribe(samples, prompt)
+        grow(self.session, self.seconds)
         return segments
 
 
@@ -146,51 +170,189 @@ def test_growing_run_file_extends_timeline(session):
     assert samples[-1] * 1000 == pytest.approx(3.5, abs=1e-3)
 
 
-# --- commit rules ---
-
-def seg(start, end, text="x"):
-    return Segment(start, end, text)
+# --- agreement (commit rules) ---
 
 
-def test_choose_keeps_last_segment_open():
-    records = transcriber.choose([seg(0, 2), seg(3, 9.5)], 10.0, 20.0, final=False, capped=False)
-    assert records == [{"start": 10.0, "end": 12.0, "text": "x"}]
+def said(*words):
+    """One segment with words (start, end, text). Times are seconds from the span start."""
+    items = [Word(*w) for w in words]
+    return [Segment(items[0].start, items[-1].end, " ".join(w.text for w in items), items)] if items else []
 
 
-def test_choose_commits_last_segment_followed_by_silence():
-    records = transcriber.choose([seg(0, 2), seg(3, 5)], 10.0, 20.0, final=False, capped=False)
-    assert [r["end"] for r in records] == [12.0, 15.0]
+def step(agreement, words, span_start, span_end, final=False, capped=False):
+    return agreement.step(said(*words), span_start, span_end, final=final, capped=capped)
 
 
-def test_choose_final_commits_all_and_marks_span_done():
-    records = transcriber.choose([seg(0, 2), seg(3, 9.9)], 10.0, 20.0, final=True, capped=False)
-    assert [(r["end"], r["text"]) for r in records] == [(12.0, "x"), (19.9, "x"), (20.0, "")]
+def test_first_pass_writes_nothing_and_shows_all_as_tail():
+    agreement = transcriber.Agreement()
+    records, caption = step(agreement, [(0, 1, "One."), (1, 2.5, "two")], 10.0, 13.0)
+    assert records == []
+    assert caption == console.Caption(10.0, "", "One. two")
 
 
-def test_choose_single_open_segment_commits_nothing():
-    assert transcriber.choose([seg(0.0, 5.72)], 14.24, 20.0, final=False, capped=False) == []
+def test_agreed_words_up_to_sentence_end_are_written():
+    agreement = transcriber.Agreement()
+    step(agreement, [(0, 1, "One."), (1, 2.5, "two")], 10.0, 13.0)
+    records, caption = step(agreement, [(0, 1, "One."), (1, 2.5, "two"), (2.5, 3.8, "three")], 10.0, 14.0)
+    assert records == [{"start": 10.0, "end": 11.0, "text": "One."}]
+    assert caption == console.Caption(11.0, "two", "three")
 
 
-def test_choose_silence_advances_but_keeps_tail():
-    records = transcriber.choose([], 10.0, 20.0, final=False, capped=False)
+def test_words_agree_by_letters_and_digits_only():
+    agreement = transcriber.Agreement()
+    step(agreement, [(0, 1, "Hello,"), (1, 2.5, "world")], 10.0, 13.0)
+    records, caption = step(agreement, [(0, 1, "hello"), (1, 2.5, "World"), (2.5, 3.8, "Next")], 10.0, 14.0)
+    assert records == []
+    assert caption == console.Caption(10.0, "hello World", "Next")
+
+
+def test_agreement_stops_at_first_changed_word():
+    agreement = transcriber.Agreement()
+    step(agreement, [(0, 1, "a"), (1, 2, "b"), (2, 2.9, "c")], 10.0, 13.0)
+    _, caption = step(agreement, [(0, 1, "a"), (1, 2, "x"), (2, 3.9, "c")], 10.0, 14.0)
+    assert caption == console.Caption(10.0, "a", "x c")
+
+
+def test_next_pass_drops_agreed_words_it_gives_again():
+    agreement = transcriber.Agreement()
+    step(agreement, [(0, 1, "a"), (1, 2.5, "b")], 10.0, 13.0)
+    step(agreement, [(0, 1, "a"), (1, 2.5, "b"), (2.5, 3.8, "c")], 10.0, 14.0)
+    # agreed: a b (b ends at 12.5). Here b comes again, later than the time filter allows.
+    _, caption = step(agreement, [(0, 1, "a"), (2.45, 2.6, "b"), (2.6, 3.8, "c"), (3.8, 4.9, "d")], 10.0, 15.0)
+    assert caption == console.Caption(10.0, "a b c", "d")
+
+
+def test_pause_writes_all_words_as_sentence_lines():
+    agreement = transcriber.Agreement()
+    records, caption = step(agreement, [(0, 1, "One."), (1, 2, "two")], 10.0, 14.0)
+    assert records == [
+        {"start": 10.0, "end": 11.0, "text": "One."},
+        {"start": 11.0, "end": 12.0, "text": "two"},
+    ]
+    assert caption is None
+
+
+def test_long_agreed_words_are_written_up_to_clause_end():
+    agreement = transcriber.Agreement()
+    words = [(0, 4, "a"), (4, 6, "b,"), (6, 8.5, "c"), (8.5, 9.8, "d")]
+    step(agreement, words, 0.0, 10.0)
+    records, caption = step(agreement, words + [(9.8, 10.9, "e")], 0.0, 11.0)
+    assert [r["text"] for r in records] == ["a b,"]
+    assert caption == console.Caption(6.0, "c d", "e")
+
+
+def test_long_agreed_words_with_no_clause_end_are_all_written():
+    agreement = transcriber.Agreement()
+    words = [(0, 4, "a"), (4, 8.5, "b"), (8.5, 9.8, "c")]
+    step(agreement, words, 0.0, 10.0)
+    records, caption = step(agreement, words + [(9.8, 10.9, "d")], 0.0, 11.0)
+    assert [r["text"] for r in records] == ["a b c"]
+    assert caption == console.Caption(9.8, "", "d")
+
+
+def test_final_writes_all_marks_span_done_and_resets():
+    agreement = transcriber.Agreement()
+    step(agreement, [(0, 1, "a"), (1, 2.5, "b")], 10.0, 13.0)
+    records, caption = step(agreement, [(0, 1, "a"), (1, 2.9, "b")], 10.0, 13.0, final=True)
+    assert records == [{"start": 10.0, "end": 12.9, "text": "a b"}, {"start": 12.9, "end": 13.0, "text": ""}]
+    assert caption is None
+    assert agreement.agreed == agreement.tail == []
+
+
+def test_capped_writes_all_but_last_word():
+    agreement = transcriber.Agreement()
+    records, caption = step(agreement, [(0, 10, "a"), (10, 29.5, "b")], 0.0, 30.0, capped=True)
+    assert [r["text"] for r in records] == ["a"]
+    assert caption == console.Caption(10.0, "", "b")
+
+
+def test_silence_advances_but_keeps_tail():
+    records, caption = transcriber.Agreement().step([], 10.0, 20.0, final=False, capped=False)
     assert records == [{"start": 10.0, "end": 18.0, "text": ""}]
+    assert caption is None
 
 
-def test_choose_short_silence_does_not_go_back():
-    assert transcriber.choose([], 10.0, 11.0, final=False, capped=False) == []
+def test_short_silence_does_not_go_back():
+    assert transcriber.Agreement().step([], 10.0, 11.0, final=False, capped=False) == ([], None)
 
 
-def test_choose_capped_single_segment_is_committed():
-    records = transcriber.choose([seg(0, 30)], 0.0, 30.0, final=False, capped=True)
-    assert records == [{"start": 0.0, "end": 30.0, "text": "x"}]
+def test_empty_word_text_is_left_out():
+    records, caption = step(transcriber.Agreement(), [(0, 1, ""), (1, 2.5, "b")], 10.0, 13.0)
+    assert caption == console.Caption(11.0, "", "b")
 
 
-def test_choose_empty_text_segment_counts_as_silence():
-    records = transcriber.choose([seg(0, 2, ""), seg(3, 9.5)], 10.0, 20.0, final=False, capped=False)
-    assert records == [{"start": 10.0, "end": 12.0, "text": ""}]
+# --- terminal output ---
+
+
+def test_fit_keeps_short_text():
+    assert console.fit("[00:00:01] ", "hello", 80) == "[00:00:01] hello"
+
+
+def test_fit_keeps_end_of_long_text():
+    line = console.fit("[00:00:01] ", "one two three four", 20)
+    assert line == "[00:00:01] …ee four"
+    assert len(line) == 19
+
+
+def test_styled_shows_agreed_plain_and_tail_dim():
+    text = console.styled(console.Caption(1.0, "one two", "three"), 80)
+    assert text == f"[00:00:01] one two {console.DIM}three{console.RESET}"
+
+
+def test_styled_cut_inside_tail_is_all_dim():
+    text = console.styled(console.Caption(1.0, "one", "two three four"), 20)
+    assert text == f"[00:00:01] {console.DIM}…ee four{console.RESET}"
+
+
+class Tty:
+    """stdout that says it is a terminal and keeps what is written."""
+
+    def __init__(self):
+        self.text = ""
+
+    def write(self, text):
+        self.text += text
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return True
+
+
+def wide_terminal(monkeypatch):
+    out = Tty()
+    monkeypatch.setattr("sys.stdout", out)
+    monkeypatch.setattr(console.shutil, "get_terminal_size", lambda: os.terminal_size((200, 24)))
+    return out
+
+
+def test_live_pass_shows_draft_then_fixed_line_replaces_it(session, monkeypatch):
+    out = wide_terminal(monkeypatch)
+    add_runs(session, 1, seconds=10.0)
+    backend = FakeBackend()
+    transcriber.run(session, backend, should_exit=lambda: backend.calls >= 1, poll=0)
+    tail = " ".join(f"at {s}.0." for s in range(0, 9, 2))
+    assert out.text == f"{console.ERASE}[00:00:00] {console.DIM}{tail}{console.RESET}{console.ERASE}"
+
+    out.text = ""
+    session.mark_stopped()
+    transcriber.run(session, FakeBackend(), poll=0)
+    assert out.text.startswith(f"{console.ERASE}[00:00:00] at 0.0.\n")
+    assert console.DIM not in out.text
+
+
+def test_no_draft_when_stdout_is_not_a_terminal(session, capsys):
+    add_runs(session, 1, seconds=10.0)
+    backend = GrowingBackend(session)
+    transcriber.run(session, backend, should_exit=lambda: backend.calls >= 2, poll=0)
+    assert capsys.readouterr().out == "".join(f"[00:00:0{s}] at {s}.0.\n" for s in (0, 2, 4, 6, 8))
 
 
 # --- transcriber loop ---
+
+ALL_15 = [f"at {s}.0." for s in range(0, 15, 2)]
+
 
 def test_stopped_session_is_transcribed_to_the_end(session):
     add_runs(session, 3)
@@ -198,23 +360,25 @@ def test_stopped_session_is_transcribed_to_the_end(session):
 
     assert transcriber.run(session, FakeBackend(), poll=0)
 
-    assert texts(session) == [f"at {s}.0" for s in range(0, 13, 2)]
+    assert texts(session) == ALL_15
     assert Progress(session.partial, {}).end == pytest.approx(15.0)
     body = session.transcript.read_text().splitlines()
     assert body[0] == f"{session.name}-live"
-    assert body[2:] == [f"[00:00:{s:02d}] at {s}.0" for s in range(0, 13, 2)]
+    assert body[2:] == [f"[00:00:{s:02d}] at {s}.0." for s in range(0, 15, 2)]
 
 
-def test_live_pass_leaves_last_segment_for_next_pass(session):
+def test_live_passes_write_agreed_sentences_then_continue(session):
     add_runs(session, 1, seconds=10.0)
-    backend = FakeBackend()
-    assert not transcriber.run(session, backend, should_exit=lambda: backend.calls >= 1, poll=0)
-    assert texts(session) == ["at 0.0", "at 2.0", "at 4.0", "at 6.0"]
+    backend = GrowingBackend(session)
+    assert not transcriber.run(session, backend, should_exit=lambda: backend.calls >= 2, poll=0)
+    assert texts(session) == [f"at {s}.0." for s in range(0, 9, 2)]
+    assert Progress(session.partial, {}).end == pytest.approx(9.5)
 
-    grow(session, 5.0)
+    grow(session, 4.0)
     session.mark_stopped()
     assert transcriber.run(session, FakeBackend(), poll=0)
-    assert texts(session)[4:] == ["at 7.5", "at 9.5", "at 11.5", "at 13.5"]
+    # 2 passes grew the audio to 12 s, then 4 s more: the last segment starts 0.5 s before the end.
+    assert texts(session)[5:] == ["at 9.5.", "at 11.5.", "at 13.5.", "at"]
 
 
 def test_live_pass_waits_for_step_of_new_audio(session):
@@ -231,15 +395,16 @@ def test_live_pass_waits_for_step_of_new_audio(session):
 
 
 def test_resume_after_crash_removes_cut_line_and_continues(session):
-    add_runs(session, 3)
-    backend = FakeBackend()
-    transcriber.run(session, backend, should_exit=lambda: backend.calls >= 1, poll=0)
+    add_runs(session, 1, seconds=10.0)
+    backend = GrowingBackend(session, seconds=5.0)
+    transcriber.run(session, backend, should_exit=lambda: backend.calls >= 2, poll=0)
+    assert texts(session) == [f"at {s}.0." for s in range(0, 9, 2)]
     with session.partial.open("a") as handle:
         handle.write('{"start": 99, "en')
     session.mark_stopped()
 
     assert transcriber.run(session, FakeBackend(), poll=0)
-    assert texts(session) == [f"at {s}.0" for s in range(0, 13, 2)] + ["at 13.5"]
+    assert texts(session)[5:] == ["at 9.5.", "at 11.5.", "at 13.5.", "at 15.5.", "at 17.5.", "at"]
 
 
 def test_pass_stops_at_gap_and_commits_all_before_it(session):
@@ -249,7 +414,7 @@ def test_pass_stops_at_gap_and_commits_all_before_it(session):
 
     records = Progress(session.partial, {}).records
     assert records[-1]["end"] == 5.0
-    assert [r["text"] for r in records if r["text"]] == ["at 0.0", "at 2.0"]
+    assert [r["text"] for r in records if r["text"]] == ["at 0.0.", "at 2.0.", "at 4.0."]
 
 
 def test_prompt_does_not_cross_gap(session):
@@ -329,7 +494,7 @@ def test_finalize_writes_txt_and_flac_and_removes_work_files(session, monkeypatc
 
     finalize_module.finalize(session)
 
-    assert session.transcript.read_text().splitlines()[2] == "[00:00:00] at 0.0"
+    assert session.transcript.read_text().splitlines()[2] == "[00:00:00] at 0.0."
     assert soundfile.info(str(session.merged)).frames == 10 * RATE
     assert not session.audio_dir.exists()
     assert not session.partial.exists()
