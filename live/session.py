@@ -1,70 +1,62 @@
-"""Session folder layout, snippet names, the audio timeline, and process claims."""
+"""Session folder layout, run file names, the audio timeline, and process claims."""
 
 import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
-
-import soundfile
+from typing import List, Optional
 
 from app.models import safe_name
 
 LIVE_DIRNAME = "live"
 STREAM = "system"
 SOURCE_ID = "live"
-SNIPPET_SUFFIX = ".flac"
-LIVE_SUFFIX = ".pcm"
-LIVE_DTYPE = "<f4"  # raw float32 little-endian, channels interleaved, no header
+MERGED_SUFFIX = ".flac"
+RUN_SUFFIX = ".pcm"
+PCM_DTYPE = "<f4"  # raw float32 little-endian, channels interleaved, no header
+PCM_BYTES = 4
 TMP_SUFFIX = ".tmp"
 WALL_FORMAT = "%Y%m%dT%H%M%S.%f"
 GAP_MIN_SECONDS = 1.0
-_SNIPPET = re.compile(r"^(\d{6})-(\d{8}T\d{6}\.\d{3})\.flac$")
-_LIVE = re.compile(r"^(\d{6})-(\d{8}T\d{6}\.\d{3})-(\d+)x(\d+)\.pcm$")
+_RUN = re.compile(r"^(\d{6})-(\d{8}T\d{6}\.\d{3})-(\d+)x(\d+)\.pcm$")
 
 
-def snippet_name(seq: int, wall: datetime) -> str:
-    """'<seq 6 digits>-<YYYYMMDDTHHMMSS.mmm>.flac'. wall is the time of the first sample."""
-    return f"{seq:06d}-{wall.strftime(WALL_FORMAT)[:-3]}{SNIPPET_SUFFIX}"
-
-
-def live_name(seq: int, wall: datetime, rate: int, channels: int) -> str:
-    """'<seq>-<wall>-<rate>x<channels>.pcm': the snippet that the recorder still writes."""
-    return f"{seq:06d}-{wall.strftime(WALL_FORMAT)[:-3]}-{rate}x{channels}{LIVE_SUFFIX}"
-
-
-def sealed_path(live: Path) -> Path:
-    """The FLAC snippet path that replaces the live file `live`."""
-    match = _LIVE.match(live.name)
-    return live.with_name(f"{match.group(1)}-{match.group(2)}{SNIPPET_SUFFIX}")
-
-
-def live_snippet(path: Path) -> "Snippet":
-    """The live file at `path` as a Snippet, with the complete frames it holds now (0 if it is gone)."""
-    match = _LIVE.match(path.name)
-    rate, channels = int(match.group(3)), int(match.group(4))
-    try:
-        frames = path.stat().st_size // (4 * channels)
-    except FileNotFoundError:
-        frames = 0
-    wall = datetime.strptime(match.group(2), WALL_FORMAT)
-    return Snippet(path, int(match.group(1)), wall, frames, rate, channels, live=True)
+def run_name(seq: int, wall: datetime, rate: int, channels: int) -> str:
+    """'<seq 6 digits>-<YYYYMMDDTHHMMSS.mmm>-<rate>x<channels>.pcm'. wall is the time of the first sample."""
+    return f"{seq:06d}-{wall.strftime(WALL_FORMAT)[:-3]}-{rate}x{channels}{RUN_SUFFIX}"
 
 
 @dataclass
-class Snippet:
+class RunFile:
+    """The audio of one recorder run: a raw .pcm file that the recorder appends to while it runs."""
+
     path: Path
     seq: int
     wall: datetime  # time of the first sample
-    frames: int
+    frames: int  # complete frames at the time of the listing
     rate: int
     channels: int
-    live: bool = False  # raw .pcm file that the recorder still appends to
 
     @property
     def seconds(self) -> float:
         return self.frames / self.rate
+
+    @property
+    def frame_bytes(self) -> int:
+        return PCM_BYTES * self.channels
+
+
+def run_file(path: Path) -> RunFile:
+    """The run file at `path`, with the complete frames it holds now (0 if it is gone)."""
+    match = _RUN.match(path.name)
+    rate, channels = int(match.group(3)), int(match.group(4))
+    try:
+        frames = path.stat().st_size // (PCM_BYTES * channels)
+    except FileNotFoundError:
+        frames = 0
+    wall = datetime.strptime(match.group(2), WALL_FORMAT)
+    return RunFile(path, int(match.group(1)), wall, frames, rate, channels)
 
 
 @dataclass
@@ -74,24 +66,21 @@ class Gap:
 
 
 class Timeline:
-    """Snippets in sequence order, placed end to end on one audio time axis.
+    """Run files with audio, in sequence order, placed end to end on one audio time axis."""
 
-    The last one can be the live snippet, with the frames it holds at the time of the listing.
-    """
-
-    def __init__(self, snippets: List[Snippet]):
-        self.snippets = snippets
+    def __init__(self, files: List[RunFile]):
+        self.files = files
         self.starts: List[float] = []
         total = 0.0
-        for snippet in snippets:
+        for run in files:
             self.starts.append(total)
-            total += snippet.seconds
+            total += run.seconds
         self.total = total
 
     def gaps(self) -> List[Gap]:
-        """Places where the wall clock jumps forward by GAP_MIN_SECONDS or more between snippets."""
+        """Places where the wall clock jumps forward by GAP_MIN_SECONDS or more between run files."""
         result = []
-        for before, after, start in zip(self.snippets, self.snippets[1:], self.starts[1:]):
+        for before, after, start in zip(self.files, self.files[1:], self.starts[1:]):
             expected = before.wall + timedelta(seconds=before.seconds)
             missing = (after.wall - expected).total_seconds()
             if missing >= GAP_MIN_SECONDS:
@@ -104,7 +93,6 @@ class Session:
 
     def __init__(self, folder: Path):
         self.folder = folder
-        self._info: Dict[str, Snippet] = {}
 
     @classmethod
     def create(cls, outdir: Path, label: str, now: Optional[datetime] = None) -> "Session":
@@ -134,7 +122,7 @@ class Session:
 
     @property
     def merged(self) -> Path:
-        return self.folder / f"{self.name}{SNIPPET_SUFFIX}"
+        return self.folder / f"{self.name}{MERGED_SUFFIX}"
 
     @property
     def stopped_marker(self) -> Path:
@@ -149,62 +137,20 @@ class Session:
     def clear_stopped(self) -> None:
         self.stopped_marker.unlink(missing_ok=True)
 
-    def snippet_paths(self) -> List[Path]:
-        """Finished snippet files, in sequence order. .tmp files are not included."""
+    def run_paths(self) -> List[Path]:
+        """Run files, in sequence order."""
         if not self.audio_dir.is_dir():
             return []
-        return sorted(p for p in self.audio_dir.iterdir() if _SNIPPET.match(p.name))
-
-    def tmp_paths(self) -> List[Path]:
-        if not self.audio_dir.is_dir():
-            return []
-        return sorted(p for p in self.audio_dir.iterdir() if p.name.endswith(TMP_SUFFIX))
-
-    def live_paths(self) -> List[Path]:
-        """Live .pcm files, in sequence order."""
-        if not self.audio_dir.is_dir():
-            return []
-        return sorted(p for p in self.audio_dir.iterdir() if _LIVE.match(p.name))
+        return sorted(p for p in self.audio_dir.iterdir() if _RUN.match(p.name))
 
     def next_seq(self) -> int:
-        seqs = [int(p.name[:6]) for p in self.snippet_paths() + self.live_paths()]
-        return max(seqs) + 1 if seqs else 1
-
-    def live_snippet(self, seq: int) -> Optional[Snippet]:
-        """The live snippet with sequence `seq` and at least 1 frame, or None."""
-        for path in self.live_paths():
-            snippet = live_snippet(path)
-            if snippet.seq == seq and snippet.frames:
-                return snippet
-        return None
+        paths = self.run_paths()
+        return int(paths[-1].name[:6]) + 1 if paths else 1
 
     def timeline(self) -> Timeline:
-        """Read the header of each new finished snippet once, add the live snippet, and return the timeline.
-
-        The live snippet is used only if its sequence is the next after the last finished
-        snippet. Thus a listing taken while the recorder replaces a live file by its FLAC never
-        puts a later snippet in the place of a missing one.
-        """
-        snippets = []
-        for path in self.snippet_paths():
-            snippet = self._info.get(path.name)
-            if snippet is None:
-                match = _SNIPPET.match(path.name)
-                info = soundfile.info(str(path))
-                snippet = Snippet(
-                    path,
-                    int(match.group(1)),
-                    datetime.strptime(match.group(2), WALL_FORMAT),
-                    info.frames,
-                    info.samplerate,
-                    info.channels,
-                )
-                self._info[path.name] = snippet
-            snippets.append(snippet)
-        live = self.live_snippet(snippets[-1].seq + 1 if snippets else 1)
-        if live is not None:
-            snippets.append(live)
-        return Timeline(snippets)
+        """The run files that hold at least 1 frame now, as a timeline."""
+        files = [run_file(path) for path in self.run_paths()]
+        return Timeline([f for f in files if f.frames])
 
 
 class AlreadyRunning(Exception):

@@ -64,9 +64,7 @@ def start(args) -> int:
     signal.signal(signal.SIGTERM, stop_on_signal)
     session = open_session(args)
     folder = str(session.folder)
-    recorder = spawn(
-        "live.recorder", [folder, "--device", args.device, "--snippet-seconds", str(args.snippet_seconds)]
-    )
+    recorder = spawn("live.recorder", [folder, "--device", args.device])
     transcriber_args = [folder, "--backend", args.backend, "--model", args.model]
     transcriber = spawn("live.transcriber", transcriber_args)
     restarts = 0
@@ -84,9 +82,9 @@ def start(args) -> int:
     except KeyboardInterrupt:
         log("stopping the recording")
         recorder.stdin.close()
-        wait_through_ctrl_c(recorder, "saving the last snippet")
+        wait_through_ctrl_c(recorder, "saving the last audio blocks")
     session.mark_stopped()
-    if not session.snippet_paths() + session.live_paths():
+    if not session.timeline().files:
         transcriber.stdin.close()
         transcriber.wait()
         log("no audio was recorded")
@@ -112,7 +110,7 @@ def start(args) -> int:
     try:
         finalize(session)
     except (MergeFailed, AlreadyRunning) as error:
-        log(f"{error}. The snippets are kept. To try again: {finish}")
+        log(f"{error}. The run files are kept. To try again: {finish}")
         return 1
     log(f"done: {session.transcript} and {session.merged}")
     return 0
@@ -126,7 +124,7 @@ def finalize_command(args) -> int:
     try:
         finalize(session, args.backend, args.model)
     except (MergeFailed, AlreadyRunning) as error:
-        print(f"{error}. The snippets are kept.", file=sys.stderr)
+        print(f"{error}. The run files are kept.", file=sys.stderr)
         return 1
     log(f"done: {session.transcript} and {session.merged}")
     return 0
@@ -152,7 +150,6 @@ def main(argv=None) -> int:
     begin.add_argument("--session", type=Path, help="continue this session folder")
     begin.add_argument("--backend", default=backends.DEFAULT_BACKEND, choices=backends.names())
     begin.add_argument("--model", default=backends.DEFAULT_MODEL)
-    begin.add_argument("--snippet-seconds", type=float, default=5.0)
     begin.set_defaults(handler=start)
 
     end = commands.add_parser("finalize", help="finish the transcript and merge the audio of a stopped session")

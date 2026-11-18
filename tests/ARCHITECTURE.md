@@ -14,15 +14,14 @@
 | `output_name` | missing date, author, title; unsafe characters |
 
 - `test_podcast_feed_search.py` replaces `podcast_feed._apple_search` with fixed results and tests the feed order of `search_feed_urls`: episode-title match first, then show-name match, no duplicates, at most `MAX_FEEDS`. It also tests that a failed request gives no results.
-- `test_live.py` tests `live/` with a `FakeBackend` and FLAC snippets written by `write_snippet`. The sample value of each snippet is (timeline time / 1000), so the fake backend can read where its audio comes from and name its segments `at <time>`.
+- `test_live.py` tests `live/` with a `FakeBackend` and raw `.pcm` run files. The sample value is (timeline time / 1000), so the fake backend can read where its audio comes from and name its segments `at <time>`.
 
 | Test group | Path tested |
 |---|---|
-| snippet writer | fixed-length snippets and a short last one; a second run continues the sequence and makes a gap; `.tmp` files ignored |
-| live `.pcm` file | writer keeps the open snippet in a `.pcm` with exact frames and removes it after the FLAC; a block split across snippets; `.pcm` used only as the next sequence, FLAC preferred; only complete frames counted; `read_16k` from `.pcm` and from the FLAC after it is sealed; `seal_live` saves a left `.pcm` and removes one whose FLAC exists; a `.pcm` whose removal fails (`PermissionError`, as on Windows) is removed with the next block, at stop, or by `seal_live` |
+| run writer | blocks appended to one run file, readable while open; a second run continues the sequence and makes a gap; other files ignored; only complete frames counted; empty run file ignored; growing file extends the timeline |
 | commit rules (`choose`) | last segment left open; committed when silence follows; final pass; no segment advances with a 2 s tail; one open segment does not advance; capped single segment; empty text |
-| transcriber loop (`run`) | stopped session done to the end; live pass then continue; `.pcm` audio transcribed; no new pass before 1 s of new audio; resume after a cut-short progress line; pass stops at a gap; prompt not used across a gap; gap line in `.txt` |
-| audio and finalize | exact merge; other rate and channels; `read_16k` across snippets; finalize writes `.txt` and `.flac` and removes work files; finalize saves a left `.pcm` before the merge; failed merge check keeps everything; finalize after merge only cleans up |
+| transcriber loop (`run`) | stopped session done to the end; live pass then continue; no new pass before 1 s of new audio; resume after a cut-short progress line; pass stops at a gap; prompt not used across a gap; gap line in `.txt` |
+| audio and finalize | exact merge; other rate and channels; merge in blocks with resampling equals one-piece resampling; `read_16k` across run files; finalize writes `.txt` and `.flac` and removes work files; failed merge check keeps everything; finalize after merge only cleans up |
 
 - `test_temp_files.py` tests `temp_files.work_files` and `temp_files.name_from_log` on files in `tmp_path`. These find the work files that the web Delete button removes.
 

@@ -1,4 +1,4 @@
-"""Transcriber process: new snippets in the session folder -> transcript lines.
+"""Transcriber process: new audio in the run files of the session folder -> transcript lines.
 
 python -m live.transcriber <session folder> [--backend faster-whisper] [--model base]
 Polls the session folder. Exits when the session is stopped and all audio is done, or when
