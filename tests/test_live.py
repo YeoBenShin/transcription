@@ -131,6 +131,61 @@ def test_writer_keeps_open_snippet_in_live_file(session):
     assert [s.frames for s in session.timeline().snippets] == [2000, 500]
 
 
+def lock_live_files(monkeypatch, times: int) -> list:
+    """Make the removal of a .pcm file fail `times` times with PermissionError, as on Windows."""
+    failures = []
+    unlink = Path.unlink
+
+    def locked_unlink(self, missing_ok=False):
+        if self.suffix == ".pcm" and len(failures) < times:
+            failures.append(self.name)
+            raise PermissionError(13, "file is open in another process")
+        return unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", locked_unlink)
+    return failures
+
+
+def test_writer_removes_locked_live_file_with_next_block(session, monkeypatch):
+    failures = lock_live_files(monkeypatch, times=1)
+    writer = SnippetWriter(session, rate=1000, channels=1, snippet_seconds=1)
+    writer.add(np.zeros((1000, 1), np.float32), arrived=T0.timestamp())
+
+    assert len(failures) == 1
+    assert [p.name[:6] for p in session.live_paths()] == ["000001"]
+    assert [(s.seq, s.live) for s in session.timeline().snippets] == [(1, False)]
+
+    writer.add(np.zeros((100, 1), np.float32))
+    assert [p.name[:6] for p in session.live_paths()] == ["000002"]
+    assert session.timeline().total == 1.1
+
+
+def test_writer_tries_locked_live_file_again_at_stop(session, monkeypatch):
+    monkeypatch.setattr("live.recorder.STALE_WAIT_SECONDS", 0)
+    failures = lock_live_files(monkeypatch, times=3)
+    writer = SnippetWriter(session, rate=1000, channels=1, snippet_seconds=1)
+    writer.add(np.zeros((500, 1), np.float32), arrived=T0.timestamp())
+    writer.flush()
+
+    assert len(failures) == 3
+    assert session.live_paths() == []
+
+
+def test_live_file_left_locked_at_stop_is_removed_by_seal(session, monkeypatch):
+    monkeypatch.setattr("live.recorder.STALE_WAIT_SECONDS", 0)
+    lock_live_files(monkeypatch, times=100)
+    writer = SnippetWriter(session, rate=1000, channels=1, snippet_seconds=1)
+    writer.add(np.zeros((500, 1), np.float32), arrived=T0.timestamp())
+    writer.flush()
+    assert len(session.live_paths()) == 1
+    assert session.timeline().total == 0.5
+
+    monkeypatch.undo()
+    assert seal_live(session) == 0
+    assert session.live_paths() == []
+    assert session.timeline().total == 0.5
+
+
 def test_writer_splits_block_across_snippets(session):
     writer = SnippetWriter(session, rate=1000, channels=1, snippet_seconds=1)
     writer.add(np.arange(2500, dtype=np.float32)[:, None] / 1e4, arrived=T0.timestamp())

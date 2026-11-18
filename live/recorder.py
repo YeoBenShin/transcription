@@ -35,6 +35,8 @@ from live.session import (
 SUBTYPE = "PCM_24"
 SILENCE_PEAK = 1e-4
 SILENCE_WARN_SECONDS = 30.0
+STALE_TRIES_AT_STOP = 20
+STALE_WAIT_SECONDS = 0.05
 
 
 def log(message: str) -> None:
@@ -73,7 +75,8 @@ class SnippetWriter:
     The wall time in each name is the run start plus the frames written before it, so the
     snippets of one run join with no gap on the timeline. The frames of the open snippet are
     also appended to its live .pcm file as they arrive. The FLAC is written first, then the
-    .pcm file is removed, so the frames are always in one of the two.
+    .pcm file is removed, so the frames are always in one of the two. If the removal fails
+    because another process has the file open (Windows), it is tried again with each new block.
     """
 
     def __init__(self, session: Session, rate: int, channels: int, snippet_seconds: float):
@@ -88,6 +91,7 @@ class SnippetWriter:
         self.buffered = 0
         self.live: Optional[BinaryIO] = None
         self.live_path: Optional[Path] = None
+        self.stale: List[Path] = []  # live files of written snippets, not removed yet
         self.silent_frames = 0
         self.warned_silence = False
 
@@ -96,6 +100,7 @@ class SnippetWriter:
             arrived = time.time() if arrived is None else arrived
             self.run_start = datetime.fromtimestamp(arrived) - timedelta(seconds=len(block) / self.rate)
         self.check_signal(block)
+        self.remove_stale()
         while len(block):
             part = block[: self.snippet_frames - self.buffered]
             block = block[len(part):]
@@ -109,6 +114,11 @@ class SnippetWriter:
         """Write the frames that are left as a last, shorter snippet."""
         if self.buffered:
             self.write(np.concatenate(self.blocks))
+        for _ in range(STALE_TRIES_AT_STOP):
+            if not self.remove_stale():
+                return
+            time.sleep(STALE_WAIT_SECONDS)
+        log(f"could not remove {len(self.stale)} live file(s); the next start or finalize removes them")
 
     @property
     def wall(self) -> datetime:
@@ -128,12 +138,24 @@ class SnippetWriter:
         write_snippet(self.session.audio_dir / snippet_name(self.seq, self.wall), data, self.rate)
         if self.live is not None:
             self.live.close()
-            self.live_path.unlink()
+            self.stale.append(self.live_path)
             self.live = None
+            self.remove_stale()
         self.seq += 1
         self.frames_done += len(data)
         self.blocks = []
         self.buffered = 0
+
+    def remove_stale(self) -> int:
+        """Try to remove each stale live file. Return the count that is left."""
+        left = []
+        for path in self.stale:
+            try:
+                path.unlink(missing_ok=True)
+            except PermissionError:
+                left.append(path)
+        self.stale = left
+        return len(left)
 
     def check_signal(self, block: np.ndarray) -> None:
         if len(block) and float(np.abs(block).max()) > SILENCE_PEAK:
