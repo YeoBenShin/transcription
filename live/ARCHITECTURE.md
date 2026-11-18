@@ -5,7 +5,7 @@
 ```
 python -m live start
    │  (parent: cli.start)
-   ├── spawns: python -m live.recorder <session>      input device ──► system/NNNNNN-<wall>-<rate>x<ch>.pcm (appended per block)
+   ├── spawns: python -m live.recorder <session>      audio source ──► system/NNNNNN-<wall>-<rate>x<ch>.pcm (appended per block)
    ├── spawns: python -m live.transcriber <session>   polls system/ ──► transcript.partial.jsonl ──► <name>.txt
    │
    Ctrl+C ─► close recorder stdin ─► recorder writes the blocks left, exits
@@ -30,7 +30,7 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 | File | Role |
 |---|---|
 | `cli.py` | `start` (spawn both children, handle Ctrl+C, restart a failed transcriber, then finalize), `finalize`, `devices`. |
-| `recorder.py` | Audio callback puts each block on a queue. Main thread gives blocks to `RunWriter`, which appends each one to the run file (raw float32) and flushes it to the OS. One run file per recorder run. Stops when stdin closes. Logs input overflow and 30 s of silence. |
+| `recorder.py` | Source: an input device (sounddevice, `--device`), or with `--loopback` the WASAPI loopback of a Windows playback device (pyaudiowpatch). Audio callback puts each block on a queue. Main thread gives blocks to `RunWriter`, which appends each one to the run file (raw float32) and flushes it to the OS. One run file per recorder run. With loopback, `RunWriter` fills the time with no blocks with zeros (see Time). Stops when stdin closes. Logs input overflow and 30 s of silence. |
 | `session.py` | Folder layout, run file names, `Timeline` (run files end to end on one audio time axis, gaps), pid claims. |
 | `transcriber.py` | Poll loop. Each pass: span from the last committed `end`, `read_16k`, backend, `Agreement.step` decides which words to write, append to progress, rewrite `<name>.txt`, print new lines, show the words not written as the draft line. |
 | `console.py` | Terminal output of all live processes: `say` (fixed line) and `Draft` (one line that is replaced; agreed words plain, tail dim). |
@@ -57,8 +57,15 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 
 - Transcript times are audio time: the sum of run file lengths. A gap between recorder runs closes up on this axis, and shows as a `(recording gap HH:MM:SS)` line at that point.
 - Wall time of a run file = arrival time of its first block - the block length. A gap is where the next run file starts later than the end of the one before.
+- Loopback only: `RunWriter.anchor` is the wall time of frame 0, set again from each block (arrival - frames written). A block that starts 0.2 s or more after the end of the run gets zeros before it. With no block for 0.5 s, the main loop writes zeros up to now - 0.5 s. Before the first block, the anchor is the stream start.
 
 ## Decisions
+
+### Windows capture: WASAPI loopback
+- Loopback records what a playback device plays, with no driver and no change to the sound output, and the user still hears the audio. VB-Cable (a virtual device, like BlackHole) also works with `--device "CABLE Output"` and no code change; it is the choice when the user must not hear the audio.
+- sounddevice (PortAudio) does not give WASAPI loopback devices. pyaudiowpatch is a PyAudio fork that shows each playback device as a `[Loopback]` input device. It is only installed on Windows.
+- WASAPI sends no packets to a loopback client while nothing plays. Without filling, the silence would close up and transcript times would not match the wall clock. The fill is in the writer and not in the transcriber, so the run file stays the full recording and the merged `.flac` has the same length as the session.
+- The fill uses thresholds (0.2 s gap, 0.5 s idle) so late callbacks during play add no zeros. The anchor is set again from each block, so the drift between the device clock and the system clock does not add up.
 
 ### Disk between recorder and transcriber
 - Audio goes to disk before transcription, so a transcriber crash, a slow model or a backlog never loses audio. A crash of the recorder loses only the blocks in its queue that are not yet in the run file (≤ 0.2 s). Checked end to end with `kill -9` on the recorder.
