@@ -2,6 +2,8 @@
 
 python -m live.recorder <session folder> --device NAME [--snippet-seconds 5]
 Stops when stdin closes (end of file).
+The open snippet is also written block by block to a raw .pcm file, so the transcriber can
+read it before the snippet is complete.
 """
 
 import argparse
@@ -12,12 +14,23 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import BinaryIO, List, Optional
 
 import numpy as np
 import soundfile
 
-from live.session import TMP_SUFFIX, AlreadyRunning, Session, claim, release, snippet_name
+from live.session import (
+    LIVE_DTYPE,
+    TMP_SUFFIX,
+    AlreadyRunning,
+    Session,
+    claim,
+    live_name,
+    live_snippet,
+    release,
+    sealed_path,
+    snippet_name,
+)
 
 SUBTYPE = "PCM_24"
 SILENCE_PEAK = 1e-4
@@ -35,11 +48,32 @@ def write_snippet(path: Path, data: np.ndarray, rate: int) -> None:
     tmp.replace(path)
 
 
+def seal_live(session: Session) -> int:
+    """Replace each live .pcm file left by a stopped recorder with its FLAC snippet. Return the count.
+
+    Only complete frames are kept. A .pcm file whose FLAC exists already is removed.
+    Call only when no recorder runs for the session.
+    """
+    sealed = 0
+    for path in session.live_paths():
+        target = sealed_path(path)
+        snippet = live_snippet(path)
+        if not target.exists() and snippet.frames:
+            count = snippet.frames * snippet.channels
+            data = np.fromfile(path, LIVE_DTYPE, count=count).reshape(snippet.frames, snippet.channels)
+            write_snippet(target, data, snippet.rate)
+            sealed += 1
+        path.unlink()
+    return sealed
+
+
 class SnippetWriter:
     """Collects audio blocks and writes one snippet each `snippet_seconds`.
 
     The wall time in each name is the run start plus the frames written before it, so the
-    snippets of one run join with no gap on the timeline.
+    snippets of one run join with no gap on the timeline. The frames of the open snippet are
+    also appended to its live .pcm file as they arrive. The FLAC is written first, then the
+    .pcm file is removed, so the frames are always in one of the two.
     """
 
     def __init__(self, session: Session, rate: int, channels: int, snippet_seconds: float):
@@ -52,6 +86,8 @@ class SnippetWriter:
         self.frames_done = 0
         self.blocks: List[np.ndarray] = []
         self.buffered = 0
+        self.live: Optional[BinaryIO] = None
+        self.live_path: Optional[Path] = None
         self.silent_frames = 0
         self.warned_silence = False
 
@@ -60,27 +96,44 @@ class SnippetWriter:
             arrived = time.time() if arrived is None else arrived
             self.run_start = datetime.fromtimestamp(arrived) - timedelta(seconds=len(block) / self.rate)
         self.check_signal(block)
-        self.blocks.append(block)
-        self.buffered += len(block)
-        while self.buffered >= self.snippet_frames:
-            data = np.concatenate(self.blocks)
-            self.write(data[: self.snippet_frames])
-            rest = data[self.snippet_frames:]
-            self.blocks = [rest] if len(rest) else []
-            self.buffered = len(rest)
+        while len(block):
+            part = block[: self.snippet_frames - self.buffered]
+            block = block[len(part):]
+            self.append_live(part)
+            self.blocks.append(part)
+            self.buffered += len(part)
+            if self.buffered == self.snippet_frames:
+                self.write(np.concatenate(self.blocks))
 
     def flush(self) -> None:
         """Write the frames that are left as a last, shorter snippet."""
         if self.buffered:
             self.write(np.concatenate(self.blocks))
-        self.blocks = []
-        self.buffered = 0
+
+    @property
+    def wall(self) -> datetime:
+        """Wall time of the first frame of the open snippet."""
+        return self.run_start + timedelta(seconds=self.frames_done / self.rate)
+
+    def append_live(self, part: np.ndarray) -> None:
+        """Append frames to the live .pcm file of the open snippet, and flush them to the OS."""
+        if self.live is None:
+            self.live_path = self.session.audio_dir / live_name(self.seq, self.wall, self.rate, self.channels)
+            self.live = open(self.live_path, "wb")
+        self.live.write(np.ascontiguousarray(part, LIVE_DTYPE).tobytes())
+        self.live.flush()
 
     def write(self, data: np.ndarray) -> None:
-        wall = self.run_start + timedelta(seconds=self.frames_done / self.rate)
-        write_snippet(self.session.audio_dir / snippet_name(self.seq, wall), data, self.rate)
+        """Write the open snippet as FLAC, then remove its live file."""
+        write_snippet(self.session.audio_dir / snippet_name(self.seq, self.wall), data, self.rate)
+        if self.live is not None:
+            self.live.close()
+            self.live_path.unlink()
+            self.live = None
         self.seq += 1
         self.frames_done += len(data)
+        self.blocks = []
+        self.buffered = 0
 
     def check_signal(self, block: np.ndarray) -> None:
         if len(block) and float(np.abs(block).max()) > SILENCE_PEAK:
@@ -179,6 +232,9 @@ def main(argv=None) -> int:
     stop = threading.Event()
     threading.Thread(target=wait_for_stdin_close, args=(stop,), daemon=True).start()
     try:
+        sealed = seal_live(session)
+        if sealed:
+            log(f"saved {sealed} live file(s) left by an earlier recorder as snippets")
         record(session, args.device, args.snippet_seconds, stop)
     finally:
         release(session, "recorder")

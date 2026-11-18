@@ -20,8 +20,9 @@ from live.backends import Backend, Segment
 from live.progress import Progress
 from live.session import SOURCE_ID, AlreadyRunning, Session, Timeline, claim, release
 
-POLL_SECONDS = 0.5
-MIN_PASS_SECONDS = 1.0  # less new audio than this waits for the next snippet
+POLL_SECONDS = 0.2
+MIN_PASS_SECONDS = 1.0  # less pending audio than this waits
+STEP_SECONDS = 1.0  # a live pass runs when the timeline grew this much since the last pass
 MAX_PASS_SECONDS = 30.0  # longest span given to the backend in one pass
 MIN_FINAL_SECONDS = 0.3  # a stopped session with less audio left than this is done
 TAIL_GUARD_SECONDS = 1.5  # a last segment that ends this far before the span end is complete
@@ -116,7 +117,8 @@ def run(
                 break
             if should_exit():
                 return False
-            fresh = timeline.total != last_total or pending > MAX_PASS_SECONDS
+            grown = last_total is None or timeline.total - last_total >= STEP_SECONDS
+            fresh = grown or pending > MAX_PASS_SECONDS
             if not stopped and (not fresh or pending < MIN_PASS_SECONDS):
                 time.sleep(poll)
                 continue

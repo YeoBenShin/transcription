@@ -69,7 +69,7 @@ Use this instead of `winget configure` when Python 3.13 is already installed, or
 ```
 
 - `tests/test_output_files.py`: output file name, header line, name conflicts (`<name>-<id>.txt`), and `temp/` cleanup. Uses a fake source through `pipeline.run`. No network, no Whisper.
-- `tests/test_live.py`: live snippet writing, gaps, commit rules, transcriber resume, merge and finalize. Fake backend, no audio device, no Whisper.
+- `tests/test_live.py`: live snippet writing, live `.pcm` files, gaps, commit rules, transcriber resume, merge and finalize. Fake backend, no audio device, no Whisper.
 - `tests/test_temp_files.py`: which files in `temp/` belong to one `<name>` (used by the web Delete button).
 
 ## Method 1: CLI
@@ -274,7 +274,7 @@ out/live/YYYYMMDD-HHMMSS-<label>/
   YYYYMMDD-HHMMSS-<label>.flac   full recording, lossless
 ```
 
-- During the recording the folder also has `system/` (5 s FLAC snippets), `transcript.partial.jsonl` and pid files. `finalize` removes them only after the merged `.flac` is checked.
+- During the recording the folder also has `system/` (5 s FLAC snippets and one `.pcm` file with the snippet being recorded), `transcript.partial.jsonl` and pid files. `finalize` removes them only after the merged `.flac` is checked.
 - The live transcript is a draft. For a better transcript, run `python -m app` (Method 1) on the `.flac` with a larger `--model`.
 
 ## Moving parts
@@ -282,7 +282,7 @@ out/live/YYYYMMDD-HHMMSS-<label>/
 - `app/cli.py`: command line for one input. Calls `pipeline.run`.
 - `app/batch.py`: command line for a folder. Calls `pipeline.run` once per file.
 - `app/web/`: local web page. `backend/` runs `python -m app` per URL. `frontend/` is static HTML, CSS, JS.
-- `live/`: live transcription. A recorder process saves FLAC snippets, a transcriber process polls the folder and writes the transcript, and `finalize` merges the snippets. Uses `app.models` and `app.stages.common` (Whisper model, transcript writer).
+- `live/`: live transcription. A recorder process saves FLAC snippets and the open snippet as raw `.pcm`, a transcriber process polls the folder and writes the transcript, and `finalize` merges the snippets. Uses `app.models` and `app.stages.common` (Whisper model, transcript writer).
 - `bin/transcribe-web`, `bin/transcribe-batch`: executable wrappers for `app.web` and `app.batch`.
 - `app/pipeline.py`: picks a source for the input, then writes `<outdir>/YYYYMMDD-Author-Title.txt`.
 - `app/sources/`: one module per input type. Each one decides which stages to run.

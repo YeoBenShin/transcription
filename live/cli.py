@@ -86,7 +86,7 @@ def start(args) -> int:
         recorder.stdin.close()
         wait_through_ctrl_c(recorder, "saving the last snippet")
     session.mark_stopped()
-    if not session.snippet_paths():
+    if not session.snippet_paths() + session.live_paths():
         transcriber.stdin.close()
         transcriber.wait()
         log("no audio was recorded")

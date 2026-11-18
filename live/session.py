@@ -15,15 +15,41 @@ LIVE_DIRNAME = "live"
 STREAM = "system"
 SOURCE_ID = "live"
 SNIPPET_SUFFIX = ".flac"
+LIVE_SUFFIX = ".pcm"
+LIVE_DTYPE = "<f4"  # raw float32 little-endian, channels interleaved, no header
 TMP_SUFFIX = ".tmp"
 WALL_FORMAT = "%Y%m%dT%H%M%S.%f"
 GAP_MIN_SECONDS = 1.0
 _SNIPPET = re.compile(r"^(\d{6})-(\d{8}T\d{6}\.\d{3})\.flac$")
+_LIVE = re.compile(r"^(\d{6})-(\d{8}T\d{6}\.\d{3})-(\d+)x(\d+)\.pcm$")
 
 
 def snippet_name(seq: int, wall: datetime) -> str:
     """'<seq 6 digits>-<YYYYMMDDTHHMMSS.mmm>.flac'. wall is the time of the first sample."""
     return f"{seq:06d}-{wall.strftime(WALL_FORMAT)[:-3]}{SNIPPET_SUFFIX}"
+
+
+def live_name(seq: int, wall: datetime, rate: int, channels: int) -> str:
+    """'<seq>-<wall>-<rate>x<channels>.pcm': the snippet that the recorder still writes."""
+    return f"{seq:06d}-{wall.strftime(WALL_FORMAT)[:-3]}-{rate}x{channels}{LIVE_SUFFIX}"
+
+
+def sealed_path(live: Path) -> Path:
+    """The FLAC snippet path that replaces the live file `live`."""
+    match = _LIVE.match(live.name)
+    return live.with_name(f"{match.group(1)}-{match.group(2)}{SNIPPET_SUFFIX}")
+
+
+def live_snippet(path: Path) -> "Snippet":
+    """The live file at `path` as a Snippet, with the complete frames it holds now (0 if it is gone)."""
+    match = _LIVE.match(path.name)
+    rate, channels = int(match.group(3)), int(match.group(4))
+    try:
+        frames = path.stat().st_size // (4 * channels)
+    except FileNotFoundError:
+        frames = 0
+    wall = datetime.strptime(match.group(2), WALL_FORMAT)
+    return Snippet(path, int(match.group(1)), wall, frames, rate, channels, live=True)
 
 
 @dataclass
@@ -34,6 +60,7 @@ class Snippet:
     frames: int
     rate: int
     channels: int
+    live: bool = False  # raw .pcm file that the recorder still appends to
 
     @property
     def seconds(self) -> float:
@@ -47,7 +74,10 @@ class Gap:
 
 
 class Timeline:
-    """Finished snippets in sequence order, placed end to end on one audio time axis."""
+    """Snippets in sequence order, placed end to end on one audio time axis.
+
+    The last one can be the live snippet, with the frames it holds at the time of the listing.
+    """
 
     def __init__(self, snippets: List[Snippet]):
         self.snippets = snippets
@@ -130,12 +160,31 @@ class Session:
             return []
         return sorted(p for p in self.audio_dir.iterdir() if p.name.endswith(TMP_SUFFIX))
 
+    def live_paths(self) -> List[Path]:
+        """Live .pcm files, in sequence order."""
+        if not self.audio_dir.is_dir():
+            return []
+        return sorted(p for p in self.audio_dir.iterdir() if _LIVE.match(p.name))
+
     def next_seq(self) -> int:
-        paths = self.snippet_paths()
-        return int(_SNIPPET.match(paths[-1].name).group(1)) + 1 if paths else 1
+        seqs = [int(p.name[:6]) for p in self.snippet_paths() + self.live_paths()]
+        return max(seqs) + 1 if seqs else 1
+
+    def live_snippet(self, seq: int) -> Optional[Snippet]:
+        """The live snippet with sequence `seq` and at least 1 frame, or None."""
+        for path in self.live_paths():
+            snippet = live_snippet(path)
+            if snippet.seq == seq and snippet.frames:
+                return snippet
+        return None
 
     def timeline(self) -> Timeline:
-        """Read the header of each new finished snippet once, and return the timeline."""
+        """Read the header of each new finished snippet once, add the live snippet, and return the timeline.
+
+        The live snippet is used only if its sequence is the next after the last finished
+        snippet. Thus a listing taken while the recorder replaces a live file by its FLAC never
+        puts a later snippet in the place of a missing one.
+        """
         snippets = []
         for path in self.snippet_paths():
             snippet = self._info.get(path.name)
@@ -152,6 +201,9 @@ class Session:
                 )
                 self._info[path.name] = snippet
             snippets.append(snippet)
+        live = self.live_snippet(snippets[-1].seq + 1 if snippets else 1)
+        if live is not None:
+            snippets.append(live)
         return Timeline(snippets)
 
 

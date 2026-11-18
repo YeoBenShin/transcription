@@ -8,10 +8,33 @@ import soundfile
 import soxr
 
 from live.backends import SAMPLE_RATE
-from live.session import TMP_SUFFIX, Snippet, Timeline
+from live.session import LIVE_DTYPE, TMP_SUFFIX, Snippet, Timeline, sealed_path
 
 SUBTYPE = "PCM_24"
 VERIFY_BLOCK = 1 << 20
+
+
+def read_frames(snippet: Snippet, first: int, last: int) -> np.ndarray:
+    """Frames [first, last) of a snippet as float32 (frames x channels).
+
+    A live snippet is read from its .pcm file. If the recorder replaced that file by its FLAC
+    in the meantime, the same frames are read from the FLAC.
+    """
+    if snippet.live:
+        try:
+            with open(snippet.path, "rb") as handle:
+                handle.seek(first * 4 * snippet.channels)
+                raw = handle.read((last - first) * 4 * snippet.channels)
+            data = np.frombuffer(raw, LIVE_DTYPE).reshape(-1, snippet.channels)
+            if len(data) == last - first:
+                return data.astype(np.float32)
+        except FileNotFoundError:
+            pass
+        path = sealed_path(snippet.path)
+    else:
+        path = snippet.path
+    data, _ = soundfile.read(str(path), start=first, stop=last, dtype="float32", always_2d=True)
+    return data
 
 
 def read_16k(timeline: Timeline, start: float, end: float) -> np.ndarray:
@@ -27,8 +50,7 @@ def read_16k(timeline: Timeline, start: float, end: float) -> np.ndarray:
             continue
         first = int(round((max(start, s0) - s0) * snippet.rate))
         last = int(round((min(end, s1) - s0) * snippet.rate))
-        data, _ = soundfile.read(str(snippet.path), start=first, stop=last, dtype="float32", always_2d=True)
-        mono = data.mean(axis=1)
+        mono = read_frames(snippet, first, last).mean(axis=1)
         if groups and groups[-1][0] == snippet.rate:
             groups[-1][1].append(mono)
         else:
