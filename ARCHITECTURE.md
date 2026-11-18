@@ -22,6 +22,8 @@ cli.py ──► pipeline.run(raw, Options) ◄── batch.py (one call per fil
 
 Details: `app/ARCHITECTURE.md`, `app/sources/ARCHITECTURE.md`, `app/stages/ARCHITECTURE.md`.
 
+`live/` is a second entry point (`python -m live`) for live audio from an input device. It does not go through `pipeline.run`. It imports `app.models`, `app.stages.common.transcribe` (model cache, progress-file helpers) and `app.stages.common.write.write_full`. Details: `live/ARCHITECTURE.md`.
+
 ## Decisions
 
 ### One interface, routing by input
@@ -50,3 +52,8 @@ Details: `app/ARCHITECTURE.md`, `app/sources/ARCHITECTURE.md`, `app/stages/ARCHI
 
 ### Package, not a single script
 - Run as `python -m app`. The package folder is `app/`, not `transcription/`, so that it is not confused with the project folder. The earlier entry point `python pipeline.py <url>` is removed.
+
+### Live transcription is a separate package
+- Live audio has no single input string and no complete file, so it does not fit `route()` and `Source.get_transcript()`. `live/` is its own package, run from the project root like `app`.
+- It depends on `app`; `app` does not depend on it. The shared parts (`Line`, `timestamp`, the Whisper model cache, `write_full`) stay in `app`, so both packages write the same transcript format and load a model the same way.
+- The live `.txt` uses the same format as `python -m app`, and the merged `.flac` is a normal input for `python -m app`. The live transcript is a draft; `python -m app` on the `.flac` gives the final one.

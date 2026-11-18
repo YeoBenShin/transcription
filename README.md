@@ -69,6 +69,7 @@ Use this instead of `winget configure` when Python 3.13 is already installed, or
 ```
 
 - `tests/test_output_files.py`: output file name, header line, name conflicts (`<name>-<id>.txt`), and `temp/` cleanup. Uses a fake source through `pipeline.run`. No network, no Whisper.
+- `tests/test_live.py`: live snippet writing, gaps, commit rules, transcriber resume, merge and finalize. Fake backend, no audio device, no Whisper.
 - `tests/test_temp_files.py`: which files in `temp/` belong to one `<name>` (used by the web Delete button).
 
 ## Method 1: CLI
@@ -234,11 +235,54 @@ Run them from the project folder:
 - Same pattern for `transcribe-batch`. Extra arguments go after the name, for example `.\bin\transcribe-web.cmd --port 8001`.
 - PowerShell needs the `.\` prefix. It does not run scripts from the current folder by name alone.
 
+## Method 3: Live transcription (macOS)
+
+Transcribes the audio that an app plays (for example Zoom or Teams) while it plays. Writes the transcript as it goes, and one `.flac` of the full recording at the end.
+
+### One-time setup
+
+1. Install BlackHole 2ch: `brew install blackhole-2ch`, then restart the Mac.
+2. Open Audio MIDI Setup. Click `+`, then Create Multi-Output Device. Select your speakers or headphones AND BlackHole 2ch. Set your speakers as the primary device.
+3. Set the Multi-Output Device as the sound output (System Settings > Sound > Output, or in the app's audio settings).
+4. The terminal app needs microphone access (System Settings > Privacy & Security > Microphone). Without it, the recording is silent, and the recorder shows `no signal for 30 s`.
+
+- Change the volume on the speakers, not in the app. A lower in-app volume also lowers the recorded audio.
+- `python -m live devices` lists the input devices.
+
+### Run
+
+```sh
+.venv/bin/python -m live start [--label weekly-call] [--device BlackHole] [--model base] [--outdir out]
+```
+
+- The terminal shows each transcript line as it is written: `[00:01:23] text`.
+- Ctrl+C stops the recording. The rest of the audio is transcribed, then the snippets are merged. A second Ctrl+C leaves this for later.
+- `--session <folder>` continues a session that is not finalized (for example after a crash). The transcript shows the missing time as `(recording gap HH:MM:SS)`.
+- `--backend` selects the speech-to-text backend. Only `faster-whisper` now.
+
+To finish a session that stopped before its end (a second Ctrl+C, a crash, a closed terminal):
+
+```sh
+.venv/bin/python -m live finalize out/live/<session>
+```
+
+### Output
+
+```
+out/live/YYYYMMDD-HHMMSS-<label>/
+  YYYYMMDD-HHMMSS-<label>.txt    transcript, same format as Method 1
+  YYYYMMDD-HHMMSS-<label>.flac   full recording, lossless
+```
+
+- During the recording the folder also has `system/` (5 s FLAC snippets), `transcript.partial.jsonl` and pid files. `finalize` removes them only after the merged `.flac` is checked.
+- The live transcript is a draft. For a better transcript, run `python -m app` (Method 1) on the `.flac` with a larger `--model`.
+
 ## Moving parts
 
 - `app/cli.py`: command line for one input. Calls `pipeline.run`.
 - `app/batch.py`: command line for a folder. Calls `pipeline.run` once per file.
 - `app/web/`: local web page. `backend/` runs `python -m app` per URL. `frontend/` is static HTML, CSS, JS.
+- `live/`: live transcription. A recorder process saves FLAC snippets, a transcriber process polls the folder and writes the transcript, and `finalize` merges the snippets. Uses `app.models` and `app.stages.common` (Whisper model, transcript writer).
 - `bin/transcribe-web`, `bin/transcribe-batch`: executable wrappers for `app.web` and `app.batch`.
 - `app/pipeline.py`: picks a source for the input, then writes `<outdir>/YYYYMMDD-Author-Title.txt`.
 - `app/sources/`: one module per input type. Each one decides which stages to run.
