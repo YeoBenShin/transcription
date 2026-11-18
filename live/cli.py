@@ -15,6 +15,7 @@ from live.session import AlreadyRunning, Session, running_pid
 POLL_SECONDS = 0.5
 TRANSCRIBER_RESTARTS = 3
 TRANSCRIBER_EXIT_WAIT = 30.0
+DEFAULT_DEVICE = "BlackHole"
 
 
 def log(message: str) -> None:
@@ -55,6 +56,13 @@ def open_session(args) -> Session:
     return session
 
 
+def recorder_source(args) -> list:
+    """Recorder arguments for the audio source: an input device, or a loopback of a playback device."""
+    if args.loopback:
+        return ["--loopback"] + (["--device", args.device] if args.device else [])
+    return ["--device", args.device or DEFAULT_DEVICE]
+
+
 def stop_on_signal(signum, frame):
     raise KeyboardInterrupt
 
@@ -64,7 +72,7 @@ def start(args) -> int:
     signal.signal(signal.SIGTERM, stop_on_signal)
     session = open_session(args)
     folder = str(session.folder)
-    recorder = spawn("live.recorder", [folder, "--device", args.device])
+    recorder = spawn("live.recorder", [folder, *recorder_source(args)])
     transcriber_args = [folder, "--backend", args.backend, "--model", args.model]
     transcriber = spawn("live.transcriber", transcriber_args)
     restarts = 0
@@ -133,9 +141,22 @@ def finalize_command(args) -> int:
 def devices_command(args) -> int:
     import sounddevice
 
+    print("Input devices (--device):")
     for device in sounddevice.query_devices():
         if device["max_input_channels"] > 0:
-            print(f"{device['name']}  ({device['max_input_channels']} ch, {device['default_samplerate']:.0f} Hz)")
+            print(f"  {device['name']}  ({device['max_input_channels']} ch, {device['default_samplerate']:.0f} Hz)")
+    if sys.platform == "win32":
+        import pyaudiowpatch
+
+        from live.recorder import loopback_devices
+
+        audio = pyaudiowpatch.PyAudio()
+        try:
+            print("Loopback devices (--loopback --device):")
+            for device in loopback_devices(audio):
+                print(f"  {device['name']}  ({device['maxInputChannels']} ch, {device['defaultSampleRate']:.0f} Hz)")
+        finally:
+            audio.terminate()
     return 0
 
 
@@ -144,7 +165,14 @@ def main(argv=None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
 
     begin = commands.add_parser("start", help="record and transcribe until Ctrl+C")
-    begin.add_argument("--device", default="BlackHole", help="input device name, or part of it")
+    begin.add_argument(
+        "--device",
+        help=f"input device name, or part of it (default {DEFAULT_DEVICE}). With --loopback: playback device "
+        "name (default: the default playback device)",
+    )
+    begin.add_argument(
+        "--loopback", action="store_true", help="Windows: record what a playback device plays (WASAPI loopback)"
+    )
     begin.add_argument("--label", default="", help="text added to the session folder name")
     begin.add_argument("--outdir", type=Path, default=Path("out"))
     begin.add_argument("--session", type=Path, help="continue this session folder")
@@ -158,7 +186,7 @@ def main(argv=None) -> int:
     end.add_argument("--model")
     end.set_defaults(handler=finalize_command)
 
-    listing = commands.add_parser("devices", help="list input devices")
+    listing = commands.add_parser("devices", help="list input devices (and loopback devices on Windows)")
     listing.set_defaults(handler=devices_command)
 
     args = parser.parse_args(argv)

@@ -20,6 +20,7 @@ numpy==2.5.3
 onnxruntime==1.29.0
 packaging==26.3
 protobuf==7.36.1
+PyAudioWPatch==0.2.12.9; sys_platform == "win32"
 pycparser==3.12
 PyYAML==6.0.3
 requests==2.34.2

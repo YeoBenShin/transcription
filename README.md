@@ -235,11 +235,11 @@ Run them from the project folder:
 - Same pattern for `transcribe-batch`. Extra arguments go after the name, for example `.\bin\transcribe-web.cmd --port 8001`.
 - PowerShell needs the `.\` prefix. It does not run scripts from the current folder by name alone.
 
-## Method 3: Live transcription (macOS)
+## Method 3: Live transcription (macOS, Windows)
 
 Transcribes the audio that an app plays (for example Zoom or Teams) while it plays. Writes the transcript as it goes, and one `.flac` of the full recording at the end.
 
-### One-time setup
+### One-time setup (macOS)
 
 1. Install BlackHole 2ch: `brew install blackhole-2ch`, then restart the Mac.
 2. Open Audio MIDI Setup. Click `+`, then Create Multi-Output Device. Select your speakers or headphones AND BlackHole 2ch. Set your speakers as the primary device.
@@ -249,10 +249,24 @@ Transcribes the audio that an app plays (for example Zoom or Teams) while it pla
 - Change the volume on the speakers, not in the app. A lower in-app volume also lowers the recorded audio.
 - `python -m live devices` lists the input devices.
 
+### One-time setup (Windows)
+
+No setup. `--loopback` records what a playback device (speakers, headphones) plays, and you still hear it. `pip install -r requirements.txt` installs `PyAudioWPatch` on Windows only.
+
+- Without `--device`, the recorder uses the default playback device at the start. If you change the output device during the recording (for example, you connect headphones), stop and start again with `--session`.
+- `python -m live devices` lists the loopback devices. `--device` takes part of a name, for example `--loopback --device Headphones`.
+- To record without hearing the audio, install VB-Cable, set "CABLE Input" as the output of the app, and use `--device "CABLE Output"` without `--loopback`.
+
 ### Run
 
 ```sh
 .venv/bin/python -m live start [--label weekly-call] [--device BlackHole] [--model base] [--outdir out]
+```
+
+Windows:
+
+```powershell
+.venv\Scripts\python -m live start --loopback [--device Speakers] [--label weekly-call]
 ```
 
 - The terminal shows each transcript line as it is written: `[00:01:23] text`. The last line is the draft of the sentence that is still spoken. It changes about each second. Plain words in it are final; dim words can still change. It becomes a fixed line when the sentence is complete (about 2-3 s after its last word). Only fixed lines go into the `.txt`.

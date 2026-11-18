@@ -30,4 +30,4 @@
 
 - Tests go through `pipeline.run`, not `write_full` alone. Thus they cover the same write and cleanup steps as a real run.
 - The fake source has no network and no Whisper, so the tests run in under 1 s and give the same result offline.
-- `test_live.py` does not open an audio device or load Whisper. The recorder stream and the faster-whisper backend are checked end to end by hand: play speech into BlackHole 2ch and run `python -m live start`.
+- `test_live.py` does not open an audio device or load Whisper. The WASAPI loopback stream uses a fake `pyaudiowpatch` module. The recorder stream and the faster-whisper backend are checked end to end by hand: play speech into BlackHole 2ch and run `python -m live start` (macOS), or play speech and run `python -m live start --loopback` (Windows).

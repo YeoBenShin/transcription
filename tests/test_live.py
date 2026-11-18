@@ -5,6 +5,9 @@ the timeline time / 1000, so a fake backend can read where its audio comes from.
 """
 
 import os
+import queue
+import sys
+import types
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -16,6 +19,7 @@ from app.models import Line
 from live import audio, backends, console, finalize as finalize_module, transcriber
 from live.backends import Segment, Word
 from live.progress import Progress
+from live import recorder
 from live.recorder import RunWriter
 from live.session import Session, run_name
 
@@ -136,6 +140,136 @@ def test_second_run_continues_sequence_and_shows_gap(session):
     [gap] = timeline.gaps()
     assert gap.at == 2.0
     assert gap.seconds == pytest.approx(10.0, abs=0.01)
+
+
+def frames_of(session):
+    [run] = session.timeline().files
+    return audio.read_frames(run, 0, run.frames)[:, 0]
+
+
+def test_fill_gaps_adds_silence_from_stream_start(session):
+    writer = RunWriter(session, 1000, 1, fill_gaps=True)
+    start = T0.timestamp()
+    writer.begin(start)
+    writer.idle(start + 0.3)  # 0.3 s with no block: still within IDLE_SECONDS
+    assert session.run_paths() == []
+    writer.idle(start + 2.5)
+    writer.add(np.ones((500, 1), np.float32), arrived=start + 3.0)
+
+    [path] = session.run_paths()
+    assert path.name == "000001-20261118T140000.000-1000x1.pcm"
+    data = frames_of(session)
+    assert len(data) == 3000
+    assert data[:2500].max() == 0 and data[2500:].min() == 1
+
+
+def test_fill_gaps_adds_silence_between_blocks(session):
+    writer = RunWriter(session, 1000, 1, fill_gaps=True)
+    start = T0.timestamp()
+    writer.begin(start)
+    writer.add(np.ones((1000, 1), np.float32), arrived=start + 1.0)
+    writer.idle(start + 1.2)
+    writer.add(np.ones((1000, 1), np.float32), arrived=start + 5.0)  # source silent from 1.0 to 4.0
+
+    data = frames_of(session)
+    assert len(data) == 5000
+    assert data[1000:4000].max() == 0 and data[4000:].min() == 1
+
+
+def test_fill_gaps_ignores_jitter(session):
+    writer = RunWriter(session, 1000, 1, fill_gaps=True)
+    start = T0.timestamp()
+    writer.begin(start)
+    for i, late in enumerate([0.0, 0.15, 0.0, 0.1]):  # blocks of 0.1 s, some arrive late
+        writer.add(np.ones((100, 1), np.float32), arrived=start + 0.1 * (i + 1) + late)
+        writer.idle(start + 0.1 * (i + 1) + late)
+    assert frames_of(session).min() == 1
+    assert writer.frames == 400
+
+
+def test_writer_without_fill_gaps_writes_only_blocks(session):
+    writer = RunWriter(session, 1000, 1)
+    writer.begin(T0.timestamp())
+    writer.idle(T0.timestamp() + 10)
+    writer.add(np.ones((1000, 1), np.float32), arrived=T0.timestamp() + 20)
+    assert len(frames_of(session)) == 1000
+
+
+class FakePyAudio:
+    """Stands in for pyaudiowpatch.PyAudio: one default loopback, a stream that sends two blocks."""
+
+    paFloat32, paInputOverflow, paContinue = 1, 2, 0
+    LOOPBACKS = [
+        {"index": 7, "name": "Speakers (Realtek) [Loopback]", "defaultSampleRate": 48000.0, "maxInputChannels": 2},
+        {"index": 9, "name": "Headphones (USB) [Loopback]", "defaultSampleRate": 44100.0, "maxInputChannels": 2},
+    ]
+    opened = []
+
+    def PyAudio(self):
+        return self
+
+    def get_default_wasapi_loopback(self):
+        return self.LOOPBACKS[0]
+
+    def get_loopback_device_info_generator(self):
+        yield from self.LOOPBACKS
+
+    def open(self, **kwargs):
+        self.opened.append(kwargs)
+        block = np.array([[0.5, -0.5]] * 4, np.float32).tobytes()
+        kwargs["stream_callback"](block, 4, {}, 0)
+        kwargs["stream_callback"](block, 4, {}, self.paInputOverflow)
+        return types.SimpleNamespace(stop_stream=lambda: None, close=lambda: None)
+
+    def terminate(self):
+        pass
+
+
+@pytest.fixture
+def fake_pyaudio(monkeypatch):
+    fake = FakePyAudio()
+    FakePyAudio.opened = []
+    monkeypatch.setitem(sys.modules, "pyaudiowpatch", fake)
+    monkeypatch.setattr(sys, "platform", "win32")
+    return fake
+
+
+def test_loopback_stream_reads_default_playback_device(fake_pyaudio):
+    blocks = queue.Queue()
+    with recorder.loopback_stream(None, blocks) as (name, rate, channels, hint):
+        assert (name, rate, channels) == ("Speakers (Realtek) [Loopback]", 48000, 2)
+        assert hint == "Check that the app plays to Speakers (Realtek)"
+    [opened] = fake_pyaudio.opened
+    assert opened["input_device_index"] == 7 and opened["format"] == FakePyAudio.paFloat32
+    first = blocks.get_nowait()[0]
+    assert first.shape == (4, 2) and first[0].tolist() == [0.5, -0.5]
+    assert blocks.get_nowait()[0] == "overflow"
+
+
+def test_loopback_stream_finds_device_by_name(fake_pyaudio):
+    with recorder.loopback_stream("headphones", queue.Queue()) as (name, rate, _, _):
+        assert (name, rate) == ("Headphones (USB) [Loopback]", 44100)
+    with pytest.raises(SystemExit, match="Loopback devices: Speakers"):
+        with recorder.loopback_stream("hdmi", queue.Queue()):
+            pass
+
+
+def test_loopback_needs_windows(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    with pytest.raises(SystemExit, match="needs Windows"):
+        with recorder.loopback_stream(None, queue.Queue()):
+            pass
+
+
+def test_start_passes_source_to_recorder():
+    from argparse import Namespace
+
+    from live.cli import recorder_source
+
+    assert recorder_source(Namespace(loopback=False, device=None)) == ["--device", "BlackHole"]
+    assert recorder_source(Namespace(loopback=False, device="Cable")) == ["--device", "Cable"]
+    assert recorder_source(Namespace(loopback=True, device=None)) == ["--loopback"]
+    assert recorder_source(Namespace(loopback=True, device="Head")) == ["--loopback", "--device", "Head"]
 
 
 def test_other_files_are_not_run_files(session):
