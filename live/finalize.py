@@ -3,37 +3,51 @@
 from typing import Optional
 
 from live import backends, console, transcriber
-from live.audio import merge
+from live.audio import merge, write_aligned
 from live.progress import read_header
-from live.session import AlreadyRunning, Session, claim, release, running_pid
+from live.session import STREAMS, AlreadyRunning, Session, claim, recorder_role, release, running_pid
 
 
 def cleanup(session: Session) -> None:
-    """Remove the progress file, run files, stop marker and the empty audio folder."""
-    session.partial.unlink(missing_ok=True)
-    for path in session.run_paths():
-        path.unlink()
+    """Remove the progress files, run files, stop marker and the empty stream folders."""
+    for stream in session.streams():
+        stream.partial.unlink(missing_ok=True)
+        for path in stream.run_paths():
+            path.unlink()
+        if stream.audio_dir.is_dir() and not any(stream.audio_dir.iterdir()):
+            stream.audio_dir.rmdir()
     session.clear_stopped()
-    if session.audio_dir.is_dir() and not any(session.audio_dir.iterdir()):
-        session.audio_dir.rmdir()
+
+
+def saved_header(session: Session) -> dict:
+    """The progress file header of the first stream that has one, or {}."""
+    for stream in session.streams():
+        header = read_header(stream.partial)
+        if header:
+            return header
+    return {}
 
 
 def finalize(session: Session, backend_name: Optional[str] = None, model: Optional[str] = None) -> None:
-    """Mark the session stopped, transcribe the audio that is left, write <name>.flac, then clean up.
+    """Mark the session stopped, transcribe the audio that is left, write the FLAC files, then clean up.
 
+    One stream with audio: <name>.flac. More than one: <name>.<stream>.flac per stream and
+    <name>.flac with all streams mixed, all on the time axis of the first stream with audio
+    (audio.write_aligned). <name>.flac is renamed into place last.
     The backend and model default to the ones in the progress file header.
     If <name>.flac exists, the merge was done and checked before, so only the clean-up runs.
     Raise AlreadyRunning if a recorder or transcriber still runs for the session.
     """
-    pid = running_pid(session, "recorder")
-    if pid is not None:
-        raise AlreadyRunning(f"a recorder (pid {pid}) still runs for {session.folder}")
+    for name in STREAMS:
+        pid = running_pid(session, recorder_role(name))
+        if pid is not None:
+            raise AlreadyRunning(f"a {name} recorder (pid {pid}) still runs for {session.folder}")
     if session.merged.exists():
         cleanup(session)
         return
     session.mark_stopped()
 
-    saved = read_header(session.partial) or {}
+    saved = saved_header(session)
     backend = backends.make(
         backend_name or saved.get("backend", backends.DEFAULT_BACKEND),
         model or saved.get("model", backends.DEFAULT_MODEL),
@@ -44,8 +58,14 @@ def finalize(session: Session, backend_name: Optional[str] = None, model: Option
     finally:
         release(session, "transcriber")
 
-    timeline = session.timeline()
-    if timeline.files:
-        frames = merge(timeline.files, session.merged)
-        console.say(f"merged {len(timeline.files)} run file(s): {frames / timeline.files[0].rate:.1f} s")
+    timelines = [(stream, stream.timeline()) for stream in session.streams()]
+    timelines = [(stream, timeline) for stream, timeline in timelines if timeline.files]
+    if len(timelines) == 1:
+        files = timelines[0][1].files
+        frames = merge(files, session.merged)
+        console.say(f"merged {len(files)} run file(s): {frames / files[0].rate:.1f} s")
+    elif timelines:
+        frames = write_aligned([(timeline.files, stream.merged) for stream, timeline in timelines], session.merged)
+        names = ", ".join(stream.name for stream, _ in timelines)
+        console.say(f"merged {names} and their mix on one time axis: {frames / timelines[0][1].files[0].rate:.1f} s each")
     cleanup(session)

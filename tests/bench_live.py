@@ -32,7 +32,7 @@ import soundfile
 from live import transcriber, vad
 from live.backends import make
 from live.progress import Progress
-from live.session import PCM_DTYPE, Session, run_name
+from live.session import PCM_DTYPE, SYSTEM, Session, run_name
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DEFAULT_AUDIO = FIXTURES / "20260801-Amir’s Lab-Linus Torvalds Explains What Makes Linux So Fast.flac"
@@ -72,7 +72,9 @@ def stats(values: List[float]) -> dict:
 
 def feed(session: Session, data: np.ndarray, rate: int, t0: float) -> None:
     """Append `data` to one run file in BLOCK_SECONDS blocks, each when its audio has played."""
-    path = session.audio_dir / run_name(1, datetime.fromtimestamp(t0), rate, data.shape[1])
+    stream = session.stream(SYSTEM)
+    stream.audio_dir.mkdir(parents=True, exist_ok=True)
+    path = stream.audio_dir / run_name(1, datetime.fromtimestamp(t0), rate, data.shape[1])
     block = int(BLOCK_SECONDS * rate)
     with open(path, "ab") as handle:
         for start in range(0, len(data), block):

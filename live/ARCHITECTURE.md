@@ -3,43 +3,60 @@
 ## How it works
 
 ```
-python -m live start
+python -m live start [--mic | --mic-only]
    │  (parent: cli.start)
-   ├── spawns: python -m live.recorder <session>      audio source ──► system/NNNNNN-<wall>-<rate>x<ch>.pcm (appended per block)
-   ├── spawns: python -m live.transcriber <session>   polls system/ ──► transcript.partial.jsonl ──► <name>.txt
+   ├── spawns: python -m live.recorder <session> --stream system   system audio (not with --mic-only) ──► system/NNNNNN-<wall>-<rate>x<ch>.pcm (appended per block)
+   ├── spawns: python -m live.recorder <session> --stream mic      (with --mic or --mic-only) microphone ──► mic/NNNNNN-...pcm
+   ├── spawns: python -m live.transcriber <session>                polls each stream folder ──► transcript.<stream>.partial.jsonl ──► <name>.txt
    │
-   Ctrl+C ─► close recorder stdin ─► recorder writes the blocks left, exits
+   Ctrl+C ─► close the stdin of each recorder ─► each writes the blocks left, exits
           ─► parent writes <session>/stopped
-          ─► transcriber does the rest of the audio, exits
-          ─► finalize: merge run files ─► <name>.flac (checked) ─► remove work files
+          ─► transcriber does the rest of the audio of all streams, exits
+          ─► finalize: merge run files per stream ─► FLAC file(s) (checked) ─► remove work files
 ```
 
-The session folder is the only link between the 2 child processes.
+The session folder is the only link between the child processes.
 
 ```
 out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
   system/000001-20261118T140000.000-48000x2.pcm   run file: sequence, wall time of first sample, rate x channels
   system/000002-...pcm                      next recorder run (after a crash or --session)
-  transcript.partial.jsonl                  progress, source of truth for the transcript
-  <name>.txt                                transcript, rewritten after each commit
+  mic/000001-...pcm                         with --mic: run files of the microphone
+  transcript.system.partial.jsonl           progress per stream, source of truth for the transcript
+  transcript.mic.partial.jsonl
+  <name>.txt                                transcript of all streams, rewritten after each commit
   stopped                                   marker: no more audio will come
-  recorder.pid, transcriber.pid             one process per role per session
-  <name>.flac                               after finalize
+  recorder.system.pid, recorder.mic.pid, transcriber.pid   one process per role per session
+  <name>.flac                               after finalize: the system stream, or with 2 streams the mix
+  <name>.system.flac, <name>.mic.flac       after finalize, with 2 streams only: each stream alone, same length as the mix
 ```
 
 | File | Role |
 |---|---|
-| `cli.py` | `start` (spawn both children, handle Ctrl+C, restart a failed transcriber, then finalize), `finalize`, `devices`. |
-| `recorder.py` | Source: an input device (sounddevice, `--device`), or with `--loopback` the WASAPI loopback of a Windows playback device (pyaudiowpatch). Audio callback puts each block on a queue. Main thread gives blocks to `RunWriter`, which appends each one to the run file (raw float32) and flushes it to the OS. One run file per recorder run. With loopback, `RunWriter` fills the time with no blocks with zeros (see Time). Stops when stdin closes. Logs input overflow and 30 s of silence. |
-| `session.py` | Folder layout, run file names, `Timeline` (run files end to end on one audio time axis, gaps), pid claims. |
-| `transcriber.py` | Poll loop. Each pass: span from the end of the last closed line, `read_16k`, backend, `vad.speech_end`, `Agreement.step` decides which words to write and where lines close, append to progress, rewrite `<name>.txt`, print lines that closed, show the open line and the tail as the draft line. |
+| `cli.py` | `start` (spawn one recorder per stream and the transcriber, handle Ctrl+C, restart a failed transcriber, then finalize), `finalize`, `devices`. |
+| `recorder.py` | One stream (`--stream system` or `mic`). Source: an input device (sounddevice, `--device`; for `mic` the default input device if no `--device`), or with `--loopback` the WASAPI loopback of a Windows playback device (pyaudiowpatch). Audio callback puts each block on a queue. Main thread gives blocks to `RunWriter`, which appends each one to the run file (raw float32) and flushes it to the OS. One run file per recorder run. With loopback, `RunWriter` fills the time with no blocks with zeros (see Time). Stops when stdin closes. Logs input overflow and 30 s of silence. |
+| `session.py` | Folder layout, `Stream` (stream folder, progress file, run files), run file names, `Timeline` (run files end to end on one audio time axis, gaps, audio time <-> wall time), pid claims. |
+| `transcriber.py` | Poll loop over all streams. `StreamState` per stream: progress, `Agreement`, timeline. Each loop gives one pass to each stream that is due. Each pass: span from the end of the last closed line, `read_16k`, backend, `vad.speech_end`, `Agreement.step` decides which words to write and where lines close, append to progress. Then `Layout` puts the lines of all streams on one time axis: rewrite `<name>.txt`, print lines that closed, show the open line and the tail as the draft line. |
 | `vad.py` | Silero VAD (bundled with faster-whisper): where the speech in a span ends, with 0.5 s of silence as the end. |
 | `loops.py` | Decoder loop checks: `loop_cut` (an n-gram of 1-8 words 3 or more times in a row) and `has_loop` (also zlib compression ratio > 2.4). |
 | `console.py` | Terminal output of all live processes: `say` (fixed line) and `Draft` (one line that is replaced; agreed words plain, tail dim). |
-| `progress.py` | Append-only JSONL with fsync per write. Truncates a line cut short by a crash. Joins open records into lines. Gives the resume point (end of the last record that is not open) and the prompt. |
-| `audio.py` | `read_16k` (span of the timeline as 16 kHz mono, by seek in the run files), `merge` (all run files into one FLAC in blocks, decode again to check the frame count). |
-| `finalize.py` | Mark stopped, run the transcriber in this process until done, merge, clean up. |
+| `progress.py` | Append-only JSONL with fsync per write, one file per stream. Truncates a line cut short by a crash. Joins open records into lines. Gives the resume point (end of the last record that is not open) and the prompt. |
+| `audio.py` | `read_16k` (span of the timeline as 16 kHz mono, by seek in the run files), `merge` (all run files of one stream into one FLAC in blocks, decode again to check the frame count), `write_aligned` (2 or more streams: each stream and the mix on the reference time axis, in one pass). |
+| `finalize.py` | Mark stopped, run the transcriber in this process until done, write the FLAC file(s), clean up. |
 | `backends/` | Speech-to-text backends behind one interface. See `backends/ARCHITECTURE.md`. |
+
+### Streams (`Layout`, `audio.write_aligned`)
+
+- A stream is one audio source with its own folder, run files, timeline and progress file. `system` is the audio that the meeting app plays. `mic` (with `--mic` or `--mic-only`) is the microphone. With `--mic-only`, `mic` is the only stream, so it is the reference and lines have no label.
+- Each stream is transcribed alone. The commit rules below apply per stream.
+- The reference is the first stream in `STREAMS` order (`system`, then `mic`) that has audio. Its timeline is the time axis of `<name>.txt` and of `<name>.flac`.
+- A time of another stream goes to wall time (wall time of its run file + offset), then to the reference time at that wall time. A wall time in a gap of the reference goes to the start of its next run file.
+- With 2 streams, each line starts with the stream label: `Them:` (system) or `Me:` (mic). Lines are sorted by time on the reference axis. With 1 stream, lines have no label.
+- Gap lines: each gap of the reference. A gap of another stream gets its own line, `(Me: recording gap HH:MM:SS)`, unless a reference gap is within 2 s of it (both recorders stopped).
+- The draft line shows the held words of the stream whose held words start last, with its label.
+- `write_aligned` (finalize, 2 or more streams): the reference run files end to end are the time axis. For each block of the reference at wall time W, `WallReader` reads each other stream at W, at the reference rate and channels, with zeros where it has no audio. Each block goes to the file of its stream, and the sum of the blocks, cut to [-1, 1], goes to `<name>.flac`. Thus all files have the same length, and sample N is the same moment in each. Audio of another stream outside the reference run files is in no file.
+- All files are written in one pass, then each is decoded again and checked. Only then are they renamed, `<name>.flac` last.
+- Transcripts of `<name>.system.flac` and `<name>.mic.flac` (from `python -m app`) are on the same time axis, so `transcript_merge` can merge them by timestamp (see `transcript_merge/ARCHITECTURE.md`).
 
 ### Commit rules (`transcriber.Agreement`, `plan_span`)
 
@@ -70,6 +87,21 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 - WASAPI sends no packets to a loopback client while nothing plays. Without filling, the silence would close up and transcript times would not match the wall clock. The fill is in the writer and not in the transcriber, so the run file stays the full recording and the merged `.flac` has the same length as the session.
 - The fill uses thresholds (0.2 s gap, 0.5 s idle) so late callbacks during play add no zeros. The anchor is set again from each block, so the drift between the device clock and the system clock does not add up.
 
+### Microphone: a second stream, transcribed alone
+- An OS mix (Aggregate Device on macOS, VoiceMeeter on Windows) needs no code, but gives no label per speaker, and speech of 2 people at the same time gets to Whisper as one signal.
+- A mix of the 2 streams before Whisper has the same problems, and also needs the 2 device clocks aligned to the frame.
+- Separate transcription gives the label `Me` / `Them` from the source, and Whisper hears one speaker at a time. Lines must only be in the correct order, so alignment by wall time is sufficient. The drift between 2 device clocks is about 50 ppm (about 0.2 s per hour).
+- One recorder process per stream: if the mic is disconnected, only the mic recorder stops. The parent keeps the other recorders and logs the stop.
+- One transcriber process for all streams: one model in memory, and one writer of `<name>.txt`. Two processes would load the model two times and both would write the same `.txt`. A silent mic costs little: the VAD finds no speech and Whisper does not decode.
+- No echo removal. With speakers, the mic also records the others, so their lines show two times. `start --mic` shows a warning to use headphones. For the speakers case, `--mic-only` records the mic as the only stream: the mic hears all people, and each line shows one time.
+- Mute in the meeting app does not mute the OS microphone, so the mic stream records speech during mute. The warning says this.
+- `<name>.flac` is the mix, so `python -m app` on it gives the full meeting. Each stream is also kept alone (`<name>.<stream>.flac`), because a mix cannot be split again.
+- The stream files are on the reference time axis, not each on its own. Each stream on its own axis starts at its own recorder start and closes up its own gaps. Then the transcripts of the 2 files cannot be lined up after finalize, because the wall times are only in the run file names, and finalize removes the run files. On one axis, the transcripts merge by timestamp. FLAC stores the zeros where a stream has no audio in almost no space.
+- One pass for all files: each block of each run file is read and resampled one time.
+- Alignment is by the wall time of each run file start plus the offset in it. The drift between 2 device clocks (about 0.2 s per hour) is not corrected. This is sufficient to put lines in order and to listen, but not for sample-exact work over long sessions.
+- `<name>.flac` is written last, so if it exists, the merge is done and checked.
+- In a test with the same BlackHole audio on the 2 streams, the mix put the mic copy 0.1 ms from the system copy (the 2 run files started 6 ms apart). With the stream files on one axis: the 3 files had the same frame count, the mic file was 0.17 ms from the system file, and `python -m app` on each gave the same timestamp for each line.
+
 ### Disk between recorder and transcriber
 - Audio goes to disk before transcription, so a transcriber crash, a slow model or a backlog never loses audio. A crash of the recorder loses only the blocks in its queue that are not yet in the run file (≤ 0.2 s). Checked end to end with `kill -9` on the recorder.
 - Native rate and channels (BlackHole: 48 kHz stereo). Resampling to 16 kHz mono happens only in memory for the backend (`soxr`).
@@ -99,7 +131,7 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 - A live pass waits for 1 s of new audio. Each pass transcribes again all audio after the last commit, so a pass for each poll uses CPU for little new text.
 
 ### No state file
-- The resume point is the last `end` in `transcript.partial.jsonl`. The run file and offset for it come from the run file sizes.
+- The resume point of a stream is the last `end` in its `transcript.<stream>.partial.jsonl`. The run file and offset for it come from the run file sizes.
 - Silence is written as records with text `""`. Without them, the resume point would stay at the last speech and each pass would grow over all the silence after it.
 
 ### Commit rules

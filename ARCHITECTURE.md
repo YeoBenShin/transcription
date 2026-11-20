@@ -24,6 +24,8 @@ Details: `app/ARCHITECTURE.md`, `app/sources/ARCHITECTURE.md`, `app/stages/ARCHI
 
 `live/` is a second entry point (`python -m live`) for live audio from an input device. It does not go through `pipeline.run`. It imports `app.models`, `app.stages.common.transcribe` (model cache, progress-file helpers) and `app.stages.common.write.write_full`. Details: `live/ARCHITECTURE.md`.
 
+`transcript_merge/` (`python -m transcript_merge`) merges transcript `.txt` files that are on one time axis, for example the `python -m app` transcripts of the `<session>.system.flac` and `<session>.mic.flac` files that `live` writes. It imports `app.models.Line` and `app.stages.common.write.write_full`. Details: `transcript_merge/ARCHITECTURE.md`.
+
 ## Decisions
 
 ### One interface, routing by input

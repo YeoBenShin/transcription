@@ -280,33 +280,91 @@ Windows:
 ```
 
 - The terminal shows each transcript line as it is written: `[00:01:23] text`. The last line is the draft of the sentence that is still spoken. It changes about each second. Plain words in it are final; dim words can still change. It becomes a fixed line when the sentence is complete (about 2-3 s after its last word). Only fixed lines go into the `.txt`.
-- Ctrl+C stops the recording. The rest of the audio is transcribed, then the audio is merged into one `.flac`. A second Ctrl+C leaves this for later.
 - `--session <folder>` continues a session that is not finalized (for example after a crash). The transcript shows the missing time as `(recording gap HH:MM:SS)`.
 - `--backend` selects the speech-to-text backend. Only `faster-whisper` now.
 
-To finish a session that stopped before its end (a second Ctrl+C, a crash, a closed terminal):
+### Stop and finalize
+
+1. Ctrl+C one time: the recording stops. The audio that is left is transcribed, then the audio is merged into `<session>.flac`. Wait for `live: done: ...`.
+2. Ctrl+C a second time (during `transcribing the audio that is left`): the program stops now and leaves the session not finalized. It shows the command to finish:
+
+   ```
+   live: transcript not complete. To finish it and merge the audio: python -m live finalize out/live/<session>
+   ```
+
+3. Later, run that command:
+
+   ```sh
+   .venv/bin/python -m live finalize out/live/<session>              # same model as the recording
+   .venv/bin/python -m live finalize out/live/<session> --model small  # other model for the audio that is left
+   ```
+
+   It transcribes the audio that is left, writes the `.flac` files, then removes the work files (`system/`, `mic/`, `*.partial.jsonl`, `stopped`). Output is the same as after one Ctrl+C.
+
+- Use `finalize` also after a crash or a closed terminal. To record more in the same session instead, use `start --session out/live/<session>`.
+- A session that is not finalized has a `stopped` file or a `system/` or `mic/` folder in it. `ls out/live/*/stopped` lists the stopped ones.
+- `finalize` refuses while a recorder of the session still runs (`... recorder (pid N) still runs`). Stop it first.
+- A finalized session is not changed by a second `finalize`. `--model` applies only to the audio that is not transcribed yet. Lines already in the `.txt` stay.
+
+### Include your own voice (`--mic`)
 
 ```sh
-.venv/bin/python -m live finalize out/live/<session>
+.venv/bin/python -m live start --mic [--label weekly-call]            # default input device
+.venv/bin/python -m live start --mic "MacBook Pro Microphone"         # input device by name (part of it)
 ```
+
+- Records the microphone as a second stream and transcribes it separately. Each line gets a label: `Me:` (microphone) or `Them:` (the app audio), for example `[00:01:23] Me: text`.
+- Use headphones. With speakers, the microphone also hears the others, and their lines show two times.
+- Mute in Zoom or Teams does not stop this recording. What you say during mute is also transcribed.
+- The terminal app needs microphone access (macOS: System Settings > Privacy & Security > Microphone).
+- `python -m live devices` lists the input devices.
+
+### Microphone only (`--mic-only`)
+
+```sh
+.venv/bin/python -m live start --mic-only [--label voice-note]                     # default input device
+.venv/bin/python -m live start --mic-only --mic "MacBook Pro Microphone"           # input device by name (part of it)
+```
+
+- Records and transcribes only the microphone. No system audio, so no BlackHole or Multi-Output Device setup is needed.
+- Use it for an in-person meeting, a voice note, or a call on speakers (the microphone hears all people).
+- Lines have no label. The output is `<session>.txt` and `<session>.flac`, as with one stream.
+- `--device` and `--loopback` are for the system audio. With `--mic-only` they stop with an error. Use `--mic NAME` to select the microphone.
+- Stop and finalize are the same (see [Stop and finalize](#stop-and-finalize)).
 
 ### Output
 
 ```
 out/live/YYYYMMDD-HHMMSS-<label>/
   YYYYMMDD-HHMMSS-<label>.txt    transcript, same format as Method 1
-  YYYYMMDD-HHMMSS-<label>.flac   full recording, lossless
+  YYYYMMDD-HHMMSS-<label>.flac   full recording, lossless (with --mic: app audio and microphone mixed; with --mic-only: microphone)
+  YYYYMMDD-HHMMSS-<label>.system.flac, .mic.flac   with --mic only: each source alone, same length and time axis as the mix
 ```
 
-- During the recording the folder also has `system/` (one raw `.pcm` file per recorder run, about 1.4 GB per hour), `transcript.partial.jsonl` and pid files. `finalize` removes them only after the merged `.flac` is checked.
+- During the recording the folder also has `system/` and/or `mic/` (one raw `.pcm` file per recorder run, about 1.4 GB per hour for 48 kHz stereo), `transcript.<stream>.partial.jsonl` and pid files. `finalize` removes them only after the `.flac` files are checked.
 - The live transcript is a draft. For a better transcript, run `python -m app` (Method 1) on the `.flac` with a larger `--model`.
+
+### Better transcript with labels (after `--mic`)
+
+Transcribe each source file, then merge the 2 transcripts by timestamp:
+
+```sh
+.venv/bin/python -m app out/live/<session>/<session>.system.flac --model small
+.venv/bin/python -m app out/live/<session>/<session>.mic.flac --model small
+.venv/bin/python -m transcript_merge Them=out/<date>-<author>-<session>.system.txt Me=out/<date>-<author>-<session>.mic.txt
+```
+
+- Writes `<common start of the names>.txt` next to the first input, with lines like `[00:01:23] Me: text`. `--name` and `--outdir` change the name and folder.
+- Works because the 2 `.flac` files are on the same time axis. Do not use it on transcripts of unrelated files.
+- Timestamps have 1 s resolution. Lines in the same second keep the order of the inputs on the command line.
 
 ## Moving parts
 
 - `app/cli.py`: command line for one input. Calls `pipeline.run`.
 - `app/batch.py`: command line for a folder. Calls `pipeline.run` once per file.
 - `app/web/`: local web page. `backend/` runs `python -m app` per URL. `frontend/` is static HTML, CSS, JS.
-- `live/`: live transcription. A recorder process appends the audio to a raw `.pcm` file, a transcriber process polls the folder and writes the transcript, and `finalize` merges the audio into one `.flac`. Uses `app.models` and `app.stages.common` (Whisper model, transcript writer).
+- `live/`: live transcription. One recorder process per source (app audio, and the microphone with `--mic`) appends the audio to a raw `.pcm` file, a transcriber process polls the folder and writes the transcript of all sources, and `finalize` merges the audio into one `.flac` (with `--mic`: also one `.flac` per source, on the same time axis). Uses `app.models` and `app.stages.common` (Whisper model, transcript writer).
+- `transcript_merge/`: merges transcripts that are on one time axis into one, in time order, with a label per input.
 - `bin/transcribe-web`, `bin/transcribe-batch`: executable wrappers for `app.web` and `app.batch`.
 - `app/pipeline.py`: picks a source for the input, then writes `<outdir>/YYYYMMDD-Author-Title.txt`.
 - `app/sources/`: one module per input type. Each one decides which stages to run.

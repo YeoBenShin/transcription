@@ -1,4 +1,4 @@
-"""The transcript progress file: <session>/transcript.partial.jsonl.
+"""The transcript progress file of one stream: <session>/transcript.<stream>.partial.jsonl.
 
 Line 1 is {"header": {session, backend, model}}. Each next line is {start, end, text} in
 timeline time, with "open": true if the transcript line goes on in the next record. A transcript

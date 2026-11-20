@@ -1,7 +1,8 @@
-"""Session folder layout, run file names, the audio timeline, and process claims."""
+"""Session folder layout, streams, run file names, the audio timeline, and process claims."""
 
 import os
 import re
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,7 +11,10 @@ from typing import List, Optional
 from app.models import safe_name
 
 LIVE_DIRNAME = "live"
-STREAM = "system"
+SYSTEM = "system"
+MIC = "mic"
+STREAMS = (SYSTEM, MIC)  # the first stream with audio is the time reference of the transcript
+LABELS = {SYSTEM: "Them", MIC: "Me"}
 SOURCE_ID = "live"
 MERGED_SUFFIX = ".flac"
 RUN_SUFFIX = ".pcm"
@@ -77,6 +81,27 @@ class Timeline:
             total += run.seconds
         self.total = total
 
+    def wall_at(self, at: float) -> datetime:
+        """Wall time of timeline time `at`: the wall time of its run file plus the offset in it."""
+        index = max(bisect_right(self.starts, at) - 1, 0)
+        return self.files[index].wall + timedelta(seconds=at - self.starts[index])
+
+    def time_at(self, wall: datetime) -> float:
+        """Timeline time of wall time `wall`.
+
+        Before the first run file: 0. In a gap between run files: the start of the next one.
+        After the last run file: its start plus the offset, not cut at its end.
+        """
+        if not self.files:
+            return 0.0
+        for run, start in zip(self.files, self.starts):
+            offset = (wall - run.wall).total_seconds()
+            if offset < 0:
+                return start
+            if offset < run.seconds:
+                return start + offset
+        return self.starts[-1] + (wall - self.files[-1].wall).total_seconds()
+
     def gaps(self) -> List[Gap]:
         """Places where the wall clock jumps forward by GAP_MIN_SECONDS or more between run files."""
         result = []
@@ -88,8 +113,48 @@ class Timeline:
         return result
 
 
+class Stream:
+    """One audio source of a session: run files in <session>/<name>/, progress in <session>/transcript.<name>.partial.jsonl."""
+
+    def __init__(self, session: "Session", name: str):
+        self.session = session
+        self.name = name
+
+    @property
+    def label(self) -> str:
+        return LABELS[self.name]
+
+    @property
+    def audio_dir(self) -> Path:
+        return self.session.folder / self.name
+
+    @property
+    def partial(self) -> Path:
+        return self.session.folder / f"transcript.{self.name}.partial.jsonl"
+
+    @property
+    def merged(self) -> Path:
+        """The FLAC file of this stream alone, made by finalize when the session has more than one stream."""
+        return self.session.folder / f"{self.session.name}.{self.name}{MERGED_SUFFIX}"
+
+    def run_paths(self) -> List[Path]:
+        """Run files, in sequence order."""
+        if not self.audio_dir.is_dir():
+            return []
+        return sorted(p for p in self.audio_dir.iterdir() if _RUN.match(p.name))
+
+    def next_seq(self) -> int:
+        paths = self.run_paths()
+        return int(paths[-1].name[:6]) + 1 if paths else 1
+
+    def timeline(self) -> Timeline:
+        """The run files that hold at least 1 frame now, as a timeline."""
+        files = [run_file(path) for path in self.run_paths()]
+        return Timeline([f for f in files if f.frames])
+
+
 class Session:
-    """One live recording: <outdir>/live/<name>/."""
+    """One live recording: <outdir>/live/<name>/, with one folder per stream."""
 
     def __init__(self, folder: Path):
         self.folder = folder
@@ -101,20 +166,22 @@ class Session:
         clean_label = safe_name(label)
         name = f"{stamp}-{clean_label}" if clean_label else stamp
         session = cls(outdir / LIVE_DIRNAME / name)
-        session.audio_dir.mkdir(parents=True, exist_ok=True)
+        session.folder.mkdir(parents=True, exist_ok=True)
         return session
 
     @property
     def name(self) -> str:
         return self.folder.name
 
-    @property
-    def audio_dir(self) -> Path:
-        return self.folder / STREAM
+    def stream(self, name: str) -> Stream:
+        return Stream(self, name)
 
-    @property
-    def partial(self) -> Path:
-        return self.folder / "transcript.partial.jsonl"
+    def streams(self) -> List[Stream]:
+        """The streams that have a folder, in STREAMS order."""
+        return [Stream(self, name) for name in STREAMS if (self.folder / name).is_dir()]
+
+    def has_audio(self) -> bool:
+        return any(stream.timeline().files for stream in self.streams())
 
     @property
     def transcript(self) -> Path:
@@ -137,20 +204,10 @@ class Session:
     def clear_stopped(self) -> None:
         self.stopped_marker.unlink(missing_ok=True)
 
-    def run_paths(self) -> List[Path]:
-        """Run files, in sequence order."""
-        if not self.audio_dir.is_dir():
-            return []
-        return sorted(p for p in self.audio_dir.iterdir() if _RUN.match(p.name))
 
-    def next_seq(self) -> int:
-        paths = self.run_paths()
-        return int(paths[-1].name[:6]) + 1 if paths else 1
-
-    def timeline(self) -> Timeline:
-        """The run files that hold at least 1 frame now, as a timeline."""
-        files = [run_file(path) for path in self.run_paths()]
-        return Timeline([f for f in files if f.frames])
+def recorder_role(stream: str) -> str:
+    """The pid file role of the recorder of `stream`."""
+    return f"recorder.{stream}"
 
 
 class AlreadyRunning(Exception):
