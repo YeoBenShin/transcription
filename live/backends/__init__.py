@@ -9,7 +9,7 @@ DEFAULT_MODEL = "base"
 
 
 def names():
-    return ["faster-whisper"]
+    return ["faster-whisper", "parakeet-mlx"]
 
 
 def make(name: str, model: str) -> Backend:
@@ -18,4 +18,8 @@ def make(name: str, model: str) -> Backend:
         from live.backends.faster_whisper import FasterWhisper
 
         return FasterWhisper(model)
+    if name == "parakeet-mlx":
+        from live.backends.parakeet_mlx import ParakeetMLX
+
+        return ParakeetMLX(model)
     raise ValueError(f"unknown backend {name!r}. Known: {', '.join(names())}")

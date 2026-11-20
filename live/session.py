@@ -1,6 +1,7 @@
 """Session folder layout, streams, run file names, the audio timeline, and process claims."""
 
 import os
+import sys
 import re
 from bisect import bisect_right
 from dataclasses import dataclass
@@ -215,6 +216,10 @@ class AlreadyRunning(Exception):
 
 
 def pid_alive(pid: int) -> bool:
+    """True if a process with this id runs. On Windows, os.kill(pid, 0) sends CTRL_C_EVENT (signal 0) to the
+    console, so the process is opened with the Windows API instead."""
+    if sys.platform == "win32":
+        return windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -222,6 +227,26 @@ def pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def windows_pid_alive(pid: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    query_limited_information = 0x1000
+    still_active = 259
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel32.OpenProcess(query_limited_information, False, pid)
+    if not handle:
+        return ctypes.get_last_error() == 5  # access denied: the process exists
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def running_pid(session: Session, role: str) -> Optional[int]:

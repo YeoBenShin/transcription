@@ -7,11 +7,14 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.models import TARGET_LANGUAGE, Line, clean, timestamp
+from app.stages.common import parakeet
 
 SAMPLE_RATE = 16000  # faster-whisper decodes all audio to 16 kHz mono
 PARTIAL_SUFFIX = ".partial.jsonl"
 PROMPT_LINES = 5
 MIN_REMAINING_SECONDS = 0.5
+DEFAULT_BACKEND = "faster-whisper"
+BACKENDS = ("faster-whisper", "parakeet-mlx")
 
 
 @lru_cache(maxsize=1)
@@ -34,13 +37,16 @@ def decode(audio: Path):
     return decode_audio(str(audio), sampling_rate=SAMPLE_RATE)
 
 
-def make_header(model_size: str, source_id: str, audio: Path, samples: int) -> dict:
-    return {
+def make_header(model_size: str, source_id: str, audio: Path, samples: int, backend: str = DEFAULT_BACKEND) -> dict:
+    header = {
         "model": model_size,
         "source_id": source_id,
         "audio_bytes": audio.stat().st_size,
         "audio_samples": samples,
     }
+    if backend != DEFAULT_BACKEND:
+        header["backend"] = backend
+    return header
 
 
 def complete_length(data: bytes) -> int:
@@ -108,16 +114,71 @@ def open_partial(partial: Path, header: dict, resume: bool):
     return partial.open("a", encoding="utf-8")
 
 
-def transcribe(audio: Path, model_size: str, partial: Path, source_id: str) -> List[Line]:
+def save_line(handle, start: float, end: float, text: str) -> Line:
+    """Append one line to the progress file and fsync it."""
+    handle.write(json.dumps({"start": start, "end": end, "text": text}) + "\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+    print(f"  [{timestamp(start)}] {text[:70]}", end="\r", flush=True)
+    return Line(start, text)
+
+
+def whisper_lines(remaining, offset: float, model_size: str, prompt: Optional[str], handle) -> List[Line]:
+    """faster-whisper over the remaining audio. Each segment is saved as it is made."""
+    print(f"transcribing with faster-whisper ({model_size}, cpu/int8)")
+    segments, _ = load_model(model_size).transcribe(
+        remaining, language=TARGET_LANGUAGE, vad_filter=True, initial_prompt=prompt
+    )
+    lines = []
+    for segment in segments:
+        text = clean(segment.text)
+        if text:
+            lines.append(save_line(handle, segment.start + offset, segment.end + offset, text))
+    return lines
+
+
+def parakeet_lines(samples, offset: float, model: str, handle) -> List[Line]:
+    """parakeet-mlx over the audio after `offset`, in windows of parakeet.WINDOW_SECONDS. In a window that
+    is not the last, a sentence that ends within parakeet.EDGE_SECONDS of the window end is not saved; the
+    next window starts at the end of the last saved sentence. Each sentence is saved as one line."""
+    print(f"transcribing with parakeet-mlx ({model})")
+    loaded = parakeet.load(model)
+    window = int(parakeet.WINDOW_SECONDS * SAMPLE_RATE)
+    lines = []
+    start = int(offset * SAMPLE_RATE)
+    while len(samples) - start >= MIN_REMAINING_SECONDS * SAMPLE_RATE:
+        chunk = samples[start:start + window]
+        last = start + window >= len(samples)
+        chunk_start = start / SAMPLE_RATE
+        limit = len(chunk) / SAMPLE_RATE - (0 if last else parakeet.EDGE_SECONDS)
+        saved_to = None
+        for sentence in parakeet.sentences(parakeet.words_of(loaded.tokens(chunk))):
+            if sentence[-1].end > limit:
+                break
+            text = clean(" ".join(w.text for w in sentence))
+            lines.append(save_line(handle, chunk_start + sentence[0].start, chunk_start + sentence[-1].end, text))
+            saved_to = sentence[-1].end
+        if last:
+            break
+        advance = saved_to if saved_to else limit
+        start += max(int(advance * SAMPLE_RATE), 1)
+    return lines
+
+
+def transcribe(
+    audio: Path, model_size: str, partial: Path, source_id: str, backend: str = DEFAULT_BACKEND
+) -> List[Line]:
     """Transcribe an audio or video file into timestamped lines.
 
-    Each segment is appended to the `partial` progress file as it is made. If that file already
-    has lines for the same model, source_id and audio, transcription continues from the end of
-    the last saved line, with the last PROMPT_LINES lines as initial_prompt.
+    `backend` is faster-whisper (`model_size` is a model size or a model folder) or parakeet-mlx
+    (`model_size` is a model folder or a Hugging Face repo id).
+    Each line is appended to the `partial` progress file as it is made. If that file already
+    has lines for the same backend, model, source_id and audio, transcription continues from the end
+    of the last saved line, with the last PROMPT_LINES lines as initial_prompt (faster-whisper only).
     """
     partial.parent.mkdir(parents=True, exist_ok=True)
     samples = decode(audio)
-    header = make_header(model_size, source_id, audio, len(samples))
+    header = make_header(model_size, source_id, audio, len(samples), backend)
 
     lines, ends = load_partial(partial, header)
     offset = ends[-1] if ends else 0.0
@@ -130,20 +191,9 @@ def transcribe(audio: Path, model_size: str, partial: Path, source_id: str) -> L
     with open_partial(partial, header, resume=bool(lines)) as handle:
         if len(remaining) < MIN_REMAINING_SECONDS * SAMPLE_RATE:
             return lines
-        print(f"transcribing with faster-whisper ({model_size}, cpu/int8)")
-        model = load_model(model_size)
-        segments, _ = model.transcribe(
-            remaining, language=TARGET_LANGUAGE, vad_filter=True, initial_prompt=prompt
-        )
-        for segment in segments:
-            text = clean(segment.text)
-            if not text:
-                continue
-            line = Line(segment.start + offset, text)
-            handle.write(json.dumps({"start": line.start, "end": segment.end + offset, "text": text}) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-            lines.append(line)
-            print(f"  [{timestamp(line.start)}] {text[:70]}", end="\r", flush=True)
+        if backend == "parakeet-mlx":
+            lines += parakeet_lines(samples, offset, model_size, handle)
+        else:
+            lines += whisper_lines(remaining, offset, model_size, prompt, handle)
     print()
     return lines

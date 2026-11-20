@@ -33,7 +33,17 @@
 - `test_temp_files.py` tests `temp_files.work_files` and `temp_files.name_from_log` on files in `tmp_path`. These find the work files that the web Delete button removes.
 - `test_transcript_merge.py` tests `transcript_merge` on `.txt` files in `tmp_path`: header and blank lines skipped, a file with no header, a line with no timestamp joined to the line before, text before the first timestamp is an error, sort by time with labels, same-second order, default name, `LABEL=PATH` parsing, the CLI output file and folder, no replacement of a transcript with another header, missing file.
 
+- `conftest.py` sets `QT_QPA_PLATFORM=offscreen`, so Qt tests open no window.
+- `test_parakeet.py`: token to word joining, sentences, model folder check, the live backend and the file windows with a `FakeParakeet`. The `model` marker test needs `PARAKEET_MODEL_DIR`.
+- `test_live_events.py`: JSON events of `console`, `start --stdin-stop` with fake children (states recording, stopping, failed with no audio), the tap stream with a fake helper script (header, frames cut across reads, helper error).
+- `test_desktop_entry.py`: `-m module` and `-u` in the entry point, exit code kept.
+- `test_desktop_models.py`: download with progress, cancel and resume (Range), dropped connection, HTTP error, wrong size, delete, catalog per platform. A local HTTP server stands in for Hugging Face.
+- `test_desktop_core.py`: settings file, child command lines per source and job, child environment, history scan and search, `process.Child` (line split, stdin close, kill of grandchildren, exit code).
+- `test_desktop_jobs.py` and `test_desktop_ui.py` (pytest-qt): job order and status, live events to signals; main window list, search, open, drop, job cards, record button with a fake `live start` script, onboarding Continue.
+
 ## Decisions
+
+- Desktop tests use small Python scripts as child processes, not the real CLIs: the window code is tested without models or audio devices. The real chain (window, packaged worker, tap, model) is checked by hand and by `packaging/build.py --smoke`.
 
 - The live benchmark is the default check for live accuracy and speed. The fixture is real speech at 2x speed: fast speech, short pauses, and an outro after the speech, so loops, cut words and missed pauses show up in 100 s of audio. The reference is the YouTube caption text, so a WER of 0 is not possible; offline `base` on the whole file (one call, default options) gives 0.12.
 - The benchmark feeds the audio at real pace, because the delay depends on how much audio arrives during each pass. It runs the transcriber in the same process (not `python -m live start` with an audio device), so it needs no BlackHole and gives the same input each run. Results still change from run to run by about ±1.5 points WER and ±0.5 s median delay (CPU load and pass timing change which spans are cut where).

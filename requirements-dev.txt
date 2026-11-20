@@ -1,2 +1,4 @@
--r requirements.txt
-pytest
+-r requirements-desktop.txt
+pytest==9.2.0
+pytest-qt==4.5.0
+pyinstaller==6.22.3

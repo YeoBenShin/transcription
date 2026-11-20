@@ -9,7 +9,9 @@ Stages used by more than one source, or by the pipeline for all sources. `http` 
 | `http.download_file` | direct file URL, target folder, file stem | path of the downloaded file |
 | `audio_file.find_audio` | folder, file stem | path of a completed `<stem>.<ext>`, or `None` |
 | `transcribe.partial_path` | temp folder, output name | `<temp>/<name>.partial.jsonl` |
-| `transcribe.transcribe` | audio/video file path, model size, progress file path, source id | `List[Line]`. Saves each line to the progress file and resumes from it |
+| `transcribe.transcribe` | audio/video file path, model (size, folder or repo id), progress file path, source id, backend (`faster-whisper` or `parakeet-mlx`) | `List[Line]`. Saves each line to the progress file and resumes from it |
+| `parakeet.load` | model folder or repo id | the parakeet-mlx model, cached per process. `tokens(audio)`: timed tokens |
+| `parakeet.words_of`, `parakeet.sentences` | timed tokens / words | words (tokens joined at a leading space) / sentences (split after `.` `?` `!`) |
 | `temp_files.announce` | output name | prints `temp name: <name>` |
 | `temp_files.name_from_log` | CLI log text | `<name>` from the last complete `temp name:` line, or `''` |
 | `temp_files.work_files` | temp folder, output name | `<name>.partial.jsonl`, `<name>.<ext>`, `<name>.<ext>.part/.ytdl/.tmp` that exist |
@@ -35,6 +37,13 @@ Stages used by more than one source, or by the pipeline for all sources. `http` 
 - A complete line that is not valid JSON (for example after a hand edit) discards the progress. Without this, every attempt would fail on the same line.
 - To resume, the decoded audio array is sliced at the last `end` and the result timestamps get that offset added. `clip_timestamps` is not used: faster-whisper ignores `vad_filter` when `clip_timestamps` is set, and VAD is needed.
 - `faster_whisper` is imported inside `load_model`. Thus the caption-only and feed-transcript paths do not load it.
+
+#### Parakeet-mlx (`--backend parakeet-mlx`)
+- Apple Silicon only. The model runs on the GPU with MLX, much faster than faster-whisper on CPU.
+- The file is done in windows of 120 s. In a window that is not the last, a sentence that ends in the last 5 s waits, and the next window starts at the end of the last saved sentence. Thus a resume and the window joins use the same rule as faster-whisper: cut at the last saved `end`, no overlap.
+- One line per sentence. Parakeet gives no segments; its sentences come from the punctuation it writes.
+- The progress header has `"backend": "parakeet-mlx"`. A faster-whisper header has no `backend` key, so progress files from before keep their header.
+- `load` reads `config.json` and `model.safetensors` from a folder with no network call. `parakeet_mlx.from_pretrained` tries Hugging Face first, even for a local folder.
 
 #### Model options
 

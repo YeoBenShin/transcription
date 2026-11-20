@@ -6,8 +6,13 @@ line has no newline, so the next fixed line or draft replaces it. When stdout is
 terminal, fixed lines are plain and drafts are not shown.
 
 The draft shows the agreed words in normal text and the words that can still change in dim text.
+
+With the environment variable LIVE_EVENTS=1 (set by the desktop app), each output is one JSON line
+instead: {"event": "log" | "line" | "draft" | "session" | "state", ...}.
 """
 
+import json
+import os
 import shutil
 import sys
 from dataclasses import dataclass
@@ -18,15 +23,37 @@ from app.models import timestamp
 ERASE = "\r\033[K"
 DIM = "\033[2m"
 RESET = "\033[0m"
+EVENTS_ENV = "LIVE_EVENTS"
 
 
 def is_terminal() -> bool:
     return sys.stdout.isatty()
 
 
+def events_mode() -> bool:
+    return os.environ.get(EVENTS_ENV) == "1"
+
+
+def event(kind: str, **fields) -> None:
+    """Print one JSON event line in events mode. Does nothing otherwise."""
+    if events_mode():
+        print(json.dumps({"event": kind, **fields}), flush=True)
+
+
 def say(text: str) -> None:
     """Print one fixed line."""
+    if events_mode():
+        event("log", text=text)
+        return
     print(f"{ERASE if is_terminal() else ''}{text}", flush=True)
+
+
+def line(start: float, text: str) -> None:
+    """Print one transcript line that will not change."""
+    if events_mode():
+        event("line", start=start, text=text)
+        return
+    say(f"[{timestamp(start)}] {text}")
 
 
 def fit(prefix: str, text: str, width: int) -> str:
@@ -62,6 +89,12 @@ class Draft:
 
     def show(self, caption: Optional[Caption]) -> None:
         """Replace the draft line with `caption`. None removes it."""
+        if events_mode():
+            if caption is None:
+                event("draft", start=None, agreed="", tail="", label="")
+            else:
+                event("draft", start=caption.start, agreed=caption.agreed, tail=caption.tail, label=caption.label)
+            return
         if not is_terminal():
             return
         if caption is None:

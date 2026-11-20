@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List
 
 from app.models import Options
+from app.stages.common.transcribe import BACKENDS, DEFAULT_BACKEND
 from app.pipeline import run
 
 DEFAULT_INBOX = Path("to-be-transcribe")
@@ -44,7 +45,8 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--inbox", type=Path, default=DEFAULT_INBOX, help="folder with the files to transcribe")
     parser.add_argument("--outdir", type=Path, default=Path("out"))
-    parser.add_argument("--model", default="base", help="faster-whisper model size")
+    parser.add_argument("--model", default="base", help="faster-whisper model size or model folder; parakeet-mlx model folder or repo id")
+    parser.add_argument("--backend", default=DEFAULT_BACKEND, choices=BACKENDS, help="speech-to-text engine")
     parser.add_argument("--keep", action="store_true", help="do not move processed files into <inbox>/done")
     args = parser.parse_args(argv)
 
@@ -59,7 +61,7 @@ def main(argv=None) -> int:
         print(f"no media files in {inbox}/")
         return 0
 
-    options = Options(outdir=args.outdir, model=args.model)
+    options = Options(outdir=args.outdir, model=args.model, backend=args.backend)
     failed = []
     for number, path in enumerate(files, start=1):
         print(f"\n[{number}/{len(files)}] {path.name}")

@@ -7,7 +7,6 @@ stdin closes (end of file).
 
 import argparse
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
@@ -16,7 +15,7 @@ import numpy as np
 
 from app.models import Line, timestamp
 from app.stages.common.write import write_full
-from live import backends, console, loops, vad
+from live import backends, console, loops, recorder, vad
 from live.console import Caption
 from live.audio import read_16k
 from live.backends import Backend, Segment, Word
@@ -411,21 +410,12 @@ def show_new(layout: Layout, state: StreamState, closed: List[TextLine], shown_g
     """
     for gap in layout.gap_lines():
         if (gap.start, gap.text) not in shown_gaps:
-            console.say(f"[{timestamp(gap.start)}] {gap.text}")
+            console.line(gap.start, gap.text)
             shown_gaps = shown_gaps | {(gap.start, gap.text)}
     for text_line in closed:
         line = layout.line(state, text_line.start, text_line.text)
-        console.say(f"[{timestamp(line.start)}] {line.text}")
+        console.line(line.start, line.text)
     return shown_gaps
-
-
-def stdin_closed() -> Callable[[], bool]:
-    """Return a function that is True after stdin reaches end of file."""
-    from live.recorder import wait_for_stdin_close
-
-    closed = threading.Event()
-    threading.Thread(target=wait_for_stdin_close, args=(closed,), daemon=True).start()
-    return closed.is_set
 
 
 def main(argv=None) -> int:
@@ -442,7 +432,7 @@ def main(argv=None) -> int:
         console.say(str(error))
         return 1
     try:
-        done = run(session, backends.make(args.backend, args.model), should_exit=stdin_closed())
+        done = run(session, backends.make(args.backend, args.model), should_exit=recorder.stdin_closed())
     finally:
         release(session, "transcriber")
     return 0 if done else 2

@@ -35,6 +35,7 @@ class Options:
     chunk_minutes: float = 4.0
     outdir: Path = field(default_factory=lambda: Path("out"))
     model: str = "base"
+    backend: str = "faster-whisper"
 
     @property
     def chunk_seconds(self) -> float:

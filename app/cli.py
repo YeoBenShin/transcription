@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from app.models import Options, timestamp
+from app.stages.common.transcribe import BACKENDS, DEFAULT_BACKEND
 from app.pipeline import GaveUp, NoTranscript, UnsupportedInput, run
 
 
@@ -15,10 +16,11 @@ def main(argv=None) -> int:
     )
     parser.add_argument("input", help="full YouTube video URL, Spotify episode URL, or path to an audio/video file")
     parser.add_argument("--outdir", type=Path, default=Path("out"))
-    parser.add_argument("--model", default="base", help="faster-whisper model size")
+    parser.add_argument("--model", default="base", help="faster-whisper model size or model folder; parakeet-mlx model folder or repo id")
+    parser.add_argument("--backend", default=DEFAULT_BACKEND, choices=BACKENDS, help="speech-to-text engine")
     args = parser.parse_args(argv)
 
-    options = Options(outdir=args.outdir, model=args.model)
+    options = Options(outdir=args.outdir, model=args.model, backend=args.backend)
     try:
         result = run(args.input, options)
     except (UnsupportedInput, NoTranscript, GaveUp) as error:
