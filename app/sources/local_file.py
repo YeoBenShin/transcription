@@ -22,7 +22,7 @@ class LocalFileSource:
         name = output_name(info.recorded, info.author, path.stem, path.stem)
         temp_files.announce(name)
         partial = partial_path(options.temp_dir, name)
-        lines = retry(lambda: transcribe(path, options.model, partial, path.stem))
+        lines = retry(lambda: transcribe(path, options.model, partial, path.stem, options.backend))
         if not lines:
             return None
-        return Transcript(path.stem, lines, origin="faster-whisper", name=name)
+        return Transcript(path.stem, lines, origin=options.backend, name=name)

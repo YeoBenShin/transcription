@@ -64,11 +64,11 @@ class SpotifySource:
         def download_and_transcribe():
             temp.mkdir(parents=True, exist_ok=True)
             audio = find_audio(temp, name) or download_file(episode.enclosure_url, temp, name)
-            return audio, transcribe(audio, options.model, partial_path(temp, name), episode_id)
+            return audio, transcribe(audio, options.model, partial_path(temp, name), episode_id, options.backend)
 
         audio, lines = retry(download_and_transcribe)
         if not lines:
             return None
         return Transcript(
-            episode_id, lines, origin="faster-whisper", name=name, downloaded_audio=audio
+            episode_id, lines, origin=options.backend, name=name, downloaded_audio=audio
         )
