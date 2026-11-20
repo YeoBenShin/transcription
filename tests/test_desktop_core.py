@@ -200,3 +200,12 @@ def test_on_exit_gets_the_exit_code():
     while not codes and time.time() < deadline:
         time.sleep(0.05)
     assert codes == [3]
+
+
+def test_is_running_sees_live_and_ended_process():
+    import subprocess
+
+    assert process.is_running(os.getpid())
+    ended = subprocess.Popen([sys.executable, "-c", "pass"])
+    ended.wait()
+    assert not process.is_running(ended.pid)

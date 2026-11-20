@@ -431,7 +431,7 @@ def test_recorder_progress_is_run_files_and_transcriber_progress_is_progress_byt
     record = '{"start": 0, "end": 1, "text": "a"}\n'
     progress.handle.write(record)
     progress.handle.flush()
-    assert transcript_progress(session) == len(record)
+    assert transcript_progress(session) == len(record.replace("\n", os.linesep))  # text mode: CRLF on Windows
     assert len(system.run_paths()) == 0
     RunWriter(system, rate=1000, channels=1).add(np.zeros((10, 1), np.float32), arrived=T0.timestamp())
     assert len(system.run_paths()) == 1

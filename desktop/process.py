@@ -8,6 +8,8 @@ import sys
 import threading
 from typing import Callable, Dict, List, Optional
 
+from live.session import pid_alive
+
 LINE_BREAK = re.compile(rb"\r\n|\r|\n")
 READ_BYTES = 4096
 
@@ -20,17 +22,7 @@ def group_flags() -> dict:
 
 
 def is_running(pid: int) -> bool:
-    if sys.platform == "win32":
-        result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True,
-                                creationflags=subprocess.CREATE_NO_WINDOW)
-        return str(pid) in result.stdout
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return pid_alive(pid)
 
 
 class Child:

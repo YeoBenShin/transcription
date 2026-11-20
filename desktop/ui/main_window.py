@@ -252,12 +252,12 @@ class MainWindow(QMainWindow):
 
     def choose_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "Audio or video files to transcribe")
-        self.transcribe_paths(paths)
+        self.transcribe_paths([str(Path(p)) for p in paths])
 
     def choose_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Folder of audio or video files to transcribe")
         if folder:
-            self.transcribe_paths([folder])
+            self.transcribe_paths([str(Path(folder))])
 
     def enter_link(self) -> None:
         dialog = LinkDialog(self)
@@ -290,7 +290,7 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, event) -> None:
         self.drop_overlay.hide()
-        self.transcribe_paths([u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()])
+        self.transcribe_paths([str(Path(u.toLocalFile())) for u in event.mimeData().urls() if u.isLocalFile()])
 
     # Live recording
 
