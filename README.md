@@ -7,10 +7,52 @@ There are 2 input types:
 1. **Online media**: YouTube videos and Spotify podcast episodes, by URL.
 2. **Personal audio**: your own audio/video files, in a folder.
 
-There are 2 ways to run it:
+There are 3 ways to run it:
 
-1. **CLI**: `python -m app` (one input) and `python -m app.batch` (a folder of personal audio).
-2. **Wrapper scripts**: double-click to start. One opens the web UI (online media). One transcribes the personal audio folder.
+1. **Desktop app** (macOS, Windows): record a meeting with a live transcript, drop files or a folder, paste a link, merge transcripts. See "Method 0".
+2. **CLI**: `python -m app` (one input), `python -m app.batch` (a folder of personal audio), `python -m live` (live audio).
+3. **Wrapper scripts**: double-click to start. One opens the web UI (online media). One transcribes the personal audio folder.
+
+## Method 0: Desktop app
+
+### Install
+
+- Download `Transcription-macos.zip` or `Transcription-windows.zip` from the latest run of the `desktop` GitHub Actions workflow (Artifacts), or build it (below).
+- macOS: unzip, move `Transcription.app` to Applications. The app is not signed: the first time, right-click > Open, then Open. Needs macOS 13+ (system audio without a driver needs 14.4+).
+- Windows: unzip, run `Transcription\Transcription.exe`. The app is not signed: on "Windows protected your PC", click More info > Run anyway.
+
+### First run
+
+1. Download a model and select it. Base is a good first choice. On Apple Silicon, Parakeet v2 (English) is faster and more accurate. Models go to `~/Library/Application Support/Transcription/models` (macOS) or `%LOCALAPPDATA%\Transcription\models` (Windows).
+2. Choose what to record (Settings > Recording):
+   - System audio. macOS: "All system audio" (asks once for System Audio Recording permission; no BlackHole), or an input device such as BlackHole. Windows: what a playback device plays (loopback).
+   - Microphone (optional). Use headphones: with speakers, the microphone also hears the others.
+
+### Use
+
+- Record button: starts a live session. Lines show a few seconds after speech; dim words can still change. Press again to stop: the rest is transcribed and the audio is merged into `<session>.flac`.
+- Drop audio/video files or a folder on the window, or use Files…, Folder… (all media files in it, the files stay in place), Link… (YouTube video or Spotify episode). One job runs at a time.
+- Merge…: 2 or more transcripts on one time axis into one, with a label per file (see "Better transcript with labels").
+- The list shows all transcripts in the output folder (default `~/Documents/Transcription`), newest first. Search filters by text. Click a card to read it; hover for copy, show in folder, finish (a live session that was not finalized) and move to trash.
+
+### Run from source
+
+```sh
+.venv/bin/pip install -r requirements-desktop.txt
+.venv/bin/python -m desktop
+```
+
+- macOS: build the system audio helper once: `sh live/native/build.sh` (needs the Xcode command line tools). The terminal app then needs the System Audio Recording permission.
+
+### Build the packaged app
+
+```sh
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python packaging/build.py --smoke
+```
+
+- Output: `dist/Transcription.app` (macOS) or `dist/Transcription/` (Windows), and `dist/Transcription-<os>.zip`. Build on each OS for that OS.
+- `--smoke` runs the packaged app on `tests/fixtures/speech_22s.flac` with the tiny model (downloaded once to `build/models`).
 
 ## Setup
 
@@ -68,6 +110,11 @@ Use this instead of `winget configure` when Python 3.13 is already installed, or
 .venv/bin/python -m pytest tests
 ```
 
+- `requirements-dev.txt` includes the desktop app packages (PySide6, parakeet-mlx on Apple Silicon), pytest-qt and PyInstaller. Qt tests draw off screen.
+- `tests/test_desktop_*.py`: desktop app (settings, commands, history, child processes, model download against a local server, job queue, main window flows with fake child processes).
+- `tests/test_parakeet.py`: parakeet-mlx word grouping and windows with a fake model. With a real model: `PARAKEET_MODEL_DIR=<model folder> pytest -m model tests/test_parakeet.py`.
+- `tests/test_live_events.py`: `live start --stdin-stop`, JSON events, the macOS system audio helper protocol (fake helper).
+
 - `tests/test_output_files.py`: output file name, header line, name conflicts (`<name>-<id>.txt`), and `temp/` cleanup. Uses a fake source through `pipeline.run`. No network, no Whisper.
 - `tests/test_live.py`: live run file writing, gaps, restart of recorders and transcriber, commit rules, transcriber resume, merge and finalize. Fake backend, no audio device, no Whisper.
 - `tests/test_temp_files.py`: which files in `temp/` belong to one `<name>` (used by the web Delete button).
@@ -112,7 +159,7 @@ Supported `<input>`:
 - After success, the file moves to `to-be-transcribe/done/`. `--keep` leaves it in place. A failed file stays in the inbox, and the run continues with the next file.
 - Exit code 1 if any file failed.
 
-`--model` is the faster-whisper size (`tiny`, `base`, `small`, `medium`, `large-v3`, ...). It applies only when Whisper runs.
+`--model` is the faster-whisper size (`tiny`, `base`, `small`, `medium`, `large-v3`, ...) or a model folder. It applies only when speech-to-text runs. `--backend parakeet-mlx --model <folder or repo id>` uses Parakeet on Apple Silicon (for example `--model mlx-community/parakeet-tdt-0.6b-v2`).
 
 ## Output
 
@@ -251,6 +298,10 @@ Transcribes the audio that an app plays (for example Zoom or Teams) while it pla
 
 ### One-time setup (macOS)
 
+macOS 14.4 or later: no setup. `--tap` records what all apps play, with no driver, and you still hear it. Build the helper once: `sh live/native/build.sh`. The first recording asks for System Audio Recording permission for the terminal app.
+
+With BlackHole instead (older macOS, or to choose the input device):
+
 1. Install BlackHole 2ch: `brew install blackhole-2ch`, then restart the Mac.
 2. Open Audio MIDI Setup. Click `+`, then Create Multi-Output Device. Select your speakers or headphones AND BlackHole 2ch. Set your speakers as the primary device.
 3. Set the Multi-Output Device as the sound output (System Settings > Sound > Output, or in the app's audio settings).
@@ -273,6 +324,12 @@ No setup. `--loopback` records what a playback device (speakers, headphones) pla
 .venv/bin/python -m live start [--label weekly-call] [--device BlackHole] [--model base] [--outdir out]
 ```
 
+macOS 14.4+ without BlackHole:
+
+```sh
+.venv/bin/python -m live start --tap [--label weekly-call]
+```
+
 Windows:
 
 ```powershell
@@ -282,7 +339,8 @@ Windows:
 - The terminal shows each transcript line as it is written: `[00:01:23] text`. The last line is the draft of the sentence that is still spoken. It changes about each second. Plain words in it are final; dim words can still change. It becomes a fixed line when the sentence is complete (about 2-3 s after its last word). Only fixed lines go into the `.txt`.
 - `--session <folder>` continues a session that is not finalized (for example after a crash). The transcript shows the missing time as `(recording gap HH:MM:SS)`.
 - If a recorder or the transcriber stops during the recording (`live: system recorder stopped by itself ...; restart in 2 s`), it starts again after 2 s. A recorder restart shows in the transcript as a recording gap. A process that fails at its first start, or 3 times in a row with no work, stays stopped. A disconnected input device does not stop the recorder on macOS.
-- `--backend` selects the speech-to-text backend. Only `faster-whisper` now.
+- `--backend` selects the speech-to-text backend: `faster-whisper` (default) or `parakeet-mlx` (Apple Silicon; `--model` is a model folder or repo id).
+- `--stdin-stop` stops the recording when stdin closes (the desktop app uses this). With the environment variable `LIVE_EVENTS=1`, all output is JSON lines.
 
 ### Stop and finalize
 
@@ -361,6 +419,9 @@ Transcribe each source file, then merge the 2 transcripts by timestamp:
 
 ## Moving parts
 
+- `desktop/`: the desktop app (PySide6). Runs the CLIs below as child processes. `models/` downloads the speech models, `ui/` has the widgets.
+- `packaging/`: PyInstaller spec and build script of the desktop app. `.github/workflows/desktop.yml` builds and tests it on macOS and Windows.
+- `live/native/`: macOS helper that records system audio with a Core Audio process tap.
 - `app/cli.py`: command line for one input. Calls `pipeline.run`.
 - `app/batch.py`: command line for a folder. Calls `pipeline.run` once per file.
 - `app/web/`: local web page. `backend/` runs `python -m app` per URL. `frontend/` is static HTML, CSS, JS.

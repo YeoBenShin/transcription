@@ -24,6 +24,8 @@ Details: `app/ARCHITECTURE.md`, `app/sources/ARCHITECTURE.md`, `app/stages/ARCHI
 
 `live/` is a second entry point (`python -m live`) for live audio from an input device. It does not go through `pipeline.run`. It imports `app.models`, `app.stages.common.transcribe` (model cache, progress-file helpers) and `app.stages.common.write.write_full`. Details: `live/ARCHITECTURE.md`.
 
+`desktop/` (`python -m desktop`, and the packaged app) is a PySide6 window over the CLIs. It runs `live start`, `app`, `app.batch`, `transcript_merge` and `live finalize` as child processes, reads the JSON events of `live`, and lists the transcripts in the output folder. Details: `desktop/ARCHITECTURE.md`. `packaging/` builds it with PyInstaller. Details: `packaging/ARCHITECTURE.md`.
+
 `transcript_merge/` (`python -m transcript_merge`) merges transcript `.txt` files that are on one time axis, for example the `python -m app` transcripts of the `<session>.system.flac` and `<session>.mic.flac` files that `live` writes. It imports `app.models.Line` and `app.stages.common.write.write_full`. Details: `transcript_merge/ARCHITECTURE.md`.
 
 ## Decisions
@@ -59,3 +61,7 @@ Details: `app/ARCHITECTURE.md`, `app/sources/ARCHITECTURE.md`, `app/stages/ARCHI
 - Live audio has no single input string and no complete file, so it does not fit `route()` and `Source.get_transcript()`. `live/` is its own package, run from the project root like `app`.
 - It depends on `app`; `app` does not depend on it. The shared parts (`Line`, `timestamp`, the Whisper model cache, `write_full`) stay in `app`, so both packages write the same transcript format and load a model the same way.
 - The live `.txt` uses the same format as `python -m app`, and the merged `.flac` is a normal input for `python -m app`. The live transcript is a draft; `python -m app` on the `.flac` gives the final one.
+
+### Desktop app over the CLIs
+- The desktop app adds no second way to transcribe. Each action is a CLI run as a child process, so a terminal run and a window run give the same files, and resume and finalize rules stay in `app` and `live`.
+- The speech engines are shared by `app` and `live`: faster-whisper (`app.stages.common.transcribe.load_model`) and parakeet-mlx (`app.stages.common.parakeet`). Both CLIs take `--backend` and `--model` (a size, a model folder, or a repo id), so the desktop app gives them the folder of the model it downloaded.
