@@ -2,9 +2,11 @@
 
 python -m live.recorder <session folder> [--stream system] --device NAME
 python -m live.recorder <session folder> [--stream system] --loopback [--device NAME]
+python -m live.recorder <session folder> [--stream system] --tap
 python -m live.recorder <session folder> --stream mic [--device NAME]
 The source is an input device (sounddevice; for the mic stream the default input device if no
---device), or with --loopback the WASAPI loopback of a Windows playback device (pyaudiowpatch).
+--device), with --loopback the WASAPI loopback of a Windows playback device (pyaudiowpatch), or with
+--tap what all apps play on macOS 14.4+ (Core Audio process tap, helper in live/native).
 Appends each audio block to the run file as it arrives, so the transcriber can read it at once.
 Stops when stdin closes (end of file).
 """
@@ -31,6 +33,9 @@ SILENCE_PEAK = 1e-4
 SILENCE_WARN_SECONDS = 30.0
 GAP_MIN_SECONDS = 0.2  # a shorter time between the run end and the next block is jitter, not a gap
 IDLE_SECONDS = 0.5  # after this time with no block, the source is taken as silent
+TAP_HELPER = "system-audio-tap"
+TAP_READ_BYTES = 64 * 1024
+TAP_HINT = "Check that System Audio Recording is allowed for this app in System Settings > Privacy & Security"
 
 
 def log(message: str) -> None:
@@ -141,6 +146,13 @@ def wait_for_stdin_close(stop: threading.Event) -> None:
     stop.set()
 
 
+def stdin_closed():
+    """Return a function that is True after stdin reaches end of file."""
+    closed = threading.Event()
+    threading.Thread(target=wait_for_stdin_close, args=(closed,), daemon=True).start()
+    return closed.is_set
+
+
 @contextmanager
 def input_stream(device_name: Optional[str], blocks: "queue.Queue", hint: str):
     """Record from an input device (sounddevice). Yields (name, rate, channels, silence hint)."""
@@ -159,6 +171,62 @@ def input_stream(device_name: Optional[str], blocks: "queue.Queue", hint: str):
         device=device["index"], channels=channels, samplerate=rate, dtype="float32", callback=callback
     ):
         yield device["name"], rate, channels, hint
+
+
+def tap_command() -> list:
+    """The command of the macOS system audio helper (live/native), from source or in the packaged app."""
+    if getattr(sys, "frozen", False):
+        return [str(Path(sys._MEIPASS) / TAP_HELPER)]
+    return [str(Path(__file__).parent / "native" / "bin" / TAP_HELPER)]
+
+
+def read_tap(process, rate: int, channels: int, blocks: "queue.Queue") -> None:
+    """Put the whole frames of the helper output on `blocks`, until the helper output ends."""
+    frame_bytes = channels * 4
+    rest = b""
+    while True:
+        data = process.stdout.read1(TAP_READ_BYTES)
+        if not data:
+            return
+        data = rest + data
+        whole = len(data) - len(data) % frame_bytes
+        rest = data[whole:]
+        if whole:
+            blocks.put((np.frombuffer(data[:whole], np.float32).reshape(-1, channels).copy(), time.time()))
+
+
+@contextmanager
+def tap_stream(blocks: "queue.Queue", command: Optional[list] = None):
+    """Record what all apps play on macOS 14.4+ (Core Audio process tap, live/native helper). Yields as input_stream.
+
+    The helper writes one JSON header line (rate, channels), then raw float32 frames. Closing its
+    stdin stops it.
+    """
+    import json
+    import subprocess
+
+    command = command or tap_command()
+    if not Path(command[0]).exists():
+        raise SystemExit(f"system audio helper not found: {command[0]}. Build it with live/native/build.sh")
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    header = process.stdout.readline()
+    if not header:
+        error = process.stderr.read().decode(errors="replace").strip()
+        process.wait()
+        raise SystemExit(f"system audio capture failed: {error or f'exit {process.returncode}'}")
+    info = json.loads(header)
+    rate, channels = int(info["rate"]), int(info["channels"])
+    reader = threading.Thread(target=read_tap, args=(process, rate, channels, blocks), daemon=True)
+    reader.start()
+    try:
+        yield "system audio (process tap)", rate, channels, TAP_HINT
+    finally:
+        process.stdin.close()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        reader.join(timeout=1)
 
 
 def loopback_devices(audio) -> list:
@@ -220,15 +288,17 @@ SILENCE_HINTS = {
 }
 
 
-def record(stream: Stream, device_name: Optional[str], loopback: bool, stop: threading.Event) -> None:
+def record(stream: Stream, device_name: Optional[str], loopback: bool, stop: threading.Event, tap: bool = False) -> None:
     """Record from the source until `stop` is set, then write the blocks that are left."""
     blocks: "queue.Queue" = queue.Queue()
-    if loopback:
+    if tap:
+        source = tap_stream(blocks)
+    elif loopback:
         source = loopback_stream(device_name, blocks)
     else:
         source = input_stream(device_name, blocks, SILENCE_HINTS[stream.name])
     with source as (name, rate, channels, hint):
-        writer = RunWriter(stream, rate, channels, fill_gaps=loopback, silence_hint=hint)
+        writer = RunWriter(stream, rate, channels, fill_gaps=loopback or tap, silence_hint=hint)
         writer.begin(time.time())
         log(f"recording {name} ({rate} Hz, {channels} ch) to {stream.audio_dir}")
         while not stop.is_set():
@@ -263,9 +333,10 @@ def main(argv=None) -> int:
     parser.add_argument("--stream", default=SYSTEM, choices=STREAMS)
     parser.add_argument("--device", help="input device name, or with --loopback a playback device name (part of it)")
     parser.add_argument("--loopback", action="store_true", help="record a Windows playback device (WASAPI loopback)")
+    parser.add_argument("--tap", action="store_true", help="macOS 14.4+: record what all apps play (process tap)")
     args = parser.parse_args(argv)
-    if args.stream == SYSTEM and not args.loopback and args.device is None:
-        parser.error("--device is needed for the system stream without --loopback")
+    if args.stream == SYSTEM and not (args.loopback or args.tap) and args.device is None:
+        parser.error("--device is needed for the system stream without --loopback or --tap")
 
     session = Session(args.session)
     stream = session.stream(args.stream)
@@ -278,7 +349,7 @@ def main(argv=None) -> int:
     stop = threading.Event()
     threading.Thread(target=wait_for_stdin_close, args=(stop,), daemon=True).start()
     try:
-        record(stream, args.device, args.loopback, stop)
+        record(stream, args.device, args.loopback, stop, tap=args.tap)
     finally:
         release(session, recorder_role(stream.name))
     return 0

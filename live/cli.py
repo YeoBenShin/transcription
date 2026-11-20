@@ -11,6 +11,7 @@ from typing import Callable, Optional
 from live import backends, console
 from live.audio import MergeFailed
 from live.finalize import finalize
+from live.recorder import stdin_closed
 from live.session import MIC, STREAMS, SYSTEM, AlreadyRunning, Session, recorder_role, running_pid
 
 POLL_SECONDS = 0.5
@@ -67,7 +68,9 @@ def recorder_sources(args) -> dict:
     With --mic-only, there is no system stream."""
     if args.mic_only:
         return {MIC: ["--device", args.mic] if args.mic else []}
-    if args.loopback:
+    if getattr(args, "tap", False):
+        sources = {SYSTEM: ["--tap"]}
+    elif args.loopback:
         sources = {SYSTEM: ["--loopback"] + (["--device", args.device] if args.device else [])}
     else:
         sources = {SYSTEM: ["--device", args.device or DEFAULT_DEVICE]}
@@ -161,6 +164,11 @@ def stop_on_signal(signum, frame):
     raise KeyboardInterrupt
 
 
+def finish(code: int) -> int:
+    console.event("state", state="done" if code == 0 else "failed")
+    return code
+
+
 def start(args) -> int:
     signal.signal(signal.SIGINT, stop_on_signal)
     signal.signal(signal.SIGTERM, stop_on_signal)
@@ -184,12 +192,17 @@ def start(args) -> int:
         [folder, "--backend", args.backend, "--model", args.model],
         lambda: transcript_progress(session),
     )
-    log(f"session {folder}. Ctrl+C stops the recording")
+    stop_requested = stdin_closed() if args.stdin_stop else (lambda: False)
+    log(f"session {folder}. " + ("Closing stdin" if args.stdin_stop else "Ctrl+C") + " stops the recording")
+    console.event("session", folder=folder)
+    console.event("state", state="recording")
 
     running = dict(recorders)
     transcriber_running = True
     try:
         while running:
+            if stop_requested():
+                raise KeyboardInterrupt
             now = time.monotonic()
             if transcriber_running:
                 transcriber_running = transcriber.check(now)
@@ -199,6 +212,7 @@ def start(args) -> int:
             time.sleep(POLL_SECONDS)
     except KeyboardInterrupt:
         log("stopping the recording")
+        console.event("state", state="stopping")
         for recorder in recorders.values():
             recorder.stop()
         for recorder in recorders.values():
@@ -209,14 +223,15 @@ def start(args) -> int:
         transcriber.stop()
         process.wait()
         log("no audio was recorded")
-        return 1
+        return finish(1)
 
     transcriber.start_planned()
     process = transcriber.process
-    finish = f"python -m live finalize {folder}"
+    finish_command = f"python -m live finalize {folder}"
     try:
         if process.poll() is None:
             log("transcribing the audio that is left. Ctrl+C leaves it for later")
+            console.event("state", state="finishing")
         code = process.wait()
     except KeyboardInterrupt:
         transcriber.stop()
@@ -224,19 +239,19 @@ def start(args) -> int:
             process.wait(timeout=TRANSCRIBER_EXIT_WAIT)
         except subprocess.TimeoutExpired:
             process.kill()
-        log(f"transcript not complete. To finish it and merge the audio: {finish}")
-        return 1
+        log(f"transcript not complete. To finish it and merge the audio: {finish_command}")
+        return finish(1)
     if code != 0:
-        log(f"transcriber failed (exit {code}). To finish: {finish}")
-        return 1
+        log(f"transcriber failed (exit {code}). To finish: {finish_command}")
+        return finish(1)
 
     try:
         finalize(session)
     except (MergeFailed, AlreadyRunning) as error:
-        log(f"{error}. The run files are kept. To try again: {finish}")
-        return 1
+        log(f"{error}. The run files are kept. To try again: {finish_command}")
+        return finish(1)
     log(f"done: {session.transcript} and {session.merged}")
-    return 0
+    return finish(0)
 
 
 def finalize_command(args) -> int:
@@ -289,6 +304,9 @@ def main(argv=None) -> int:
         "--loopback", action="store_true", help="Windows: record what a playback device plays (WASAPI loopback)"
     )
     begin.add_argument(
+        "--tap", action="store_true", help="macOS 14.4+: record what all apps play (Core Audio process tap, no driver)"
+    )
+    begin.add_argument(
         "--mic",
         nargs="?",
         const="",
@@ -303,6 +321,9 @@ def main(argv=None) -> int:
         "no system audio. Lines have no label",
     )
     begin.add_argument("--label", default="", help="text added to the session folder name")
+    begin.add_argument(
+        "--stdin-stop", action="store_true", help="stop the recording when stdin closes (for a program that runs this)"
+    )
     begin.add_argument("--outdir", type=Path, default=Path("out"))
     begin.add_argument("--session", type=Path, help="continue this session folder")
     begin.add_argument("--backend", default=backends.DEFAULT_BACKEND, choices=backends.names())
@@ -319,6 +340,8 @@ def main(argv=None) -> int:
     listing.set_defaults(handler=devices_command)
 
     args = parser.parse_args(argv)
-    if getattr(args, "mic_only", False) and (args.loopback or args.device):
-        parser.error("--mic-only records no system audio: --device and --loopback do not apply. Use --mic NAME")
+    if getattr(args, "mic_only", False) and (args.loopback or args.device or args.tap):
+        parser.error("--mic-only records no system audio: --device, --loopback and --tap do not apply. Use --mic NAME")
+    if getattr(args, "tap", False) and (args.loopback or args.device):
+        parser.error("--tap records all apps: --device and --loopback do not apply")
     return args.handler(args)

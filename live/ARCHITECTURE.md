@@ -3,13 +3,13 @@
 ## How it works
 
 ```
-python -m live start [--mic | --mic-only]
+python -m live start [--tap | --loopback | --device NAME] [--mic | --mic-only] [--stdin-stop]
    │  (parent: cli.start)
    ├── spawns: python -m live.recorder <session> --stream system   system audio (not with --mic-only) ──► system/NNNNNN-<wall>-<rate>x<ch>.pcm (appended per block)
    ├── spawns: python -m live.recorder <session> --stream mic      (with --mic or --mic-only) microphone ──► mic/NNNNNN-...pcm
    ├── spawns: python -m live.transcriber <session>                polls each stream folder ──► transcript.<stream>.partial.jsonl ──► <name>.txt
    │
-   Ctrl+C ─► close the stdin of each recorder ─► each writes the blocks left, exits
+   Ctrl+C (or stdin closes, with --stdin-stop) ─► close the stdin of each recorder ─► each writes the blocks left, exits
           ─► parent writes <session>/stopped
           ─► transcriber does the rest of the audio of all streams, exits
           ─► finalize: merge run files per stream ─► FLAC file(s) (checked) ─► remove work files
@@ -34,16 +34,17 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 | File | Role |
 |---|---|
 | `cli.py` | `start` (spawn one recorder per stream and the transcriber, restart a child that exits, handle Ctrl+C, then finalize), `finalize`, `devices`. `Child`: one child process and its restart rules, the same for recorders and the transcriber. |
-| `recorder.py` | One stream (`--stream system` or `mic`). Source: an input device (sounddevice, `--device`; for `mic` the default input device if no `--device`), or with `--loopback` the WASAPI loopback of a Windows playback device (pyaudiowpatch). Audio callback puts each block on a queue. Main thread gives blocks to `RunWriter`, which appends each one to the run file (raw float32) and flushes it to the OS. One run file per recorder run. With loopback, `RunWriter` fills the time with no blocks with zeros (see Time). Stops when stdin closes. Logs input overflow and 30 s of silence. |
+| `recorder.py` | One stream (`--stream system` or `mic`). Source: an input device (sounddevice, `--device`; for `mic` the default input device if no `--device`), with `--loopback` the WASAPI loopback of a Windows playback device (pyaudiowpatch), or with `--tap` what all apps play on macOS 14.4+ (the `native/` helper as a child process: one JSON header line, then raw float32 frames on its stdout). Audio callback puts each block on a queue. Main thread gives blocks to `RunWriter`, which appends each one to the run file (raw float32) and flushes it to the OS. One run file per recorder run. With loopback and tap, `RunWriter` fills the time with no blocks with zeros (see Time). Stops when stdin closes. Logs input overflow and 30 s of silence. |
 | `session.py` | Folder layout, `Stream` (stream folder, progress file, run files), run file names, `Timeline` (run files end to end on one audio time axis, gaps, audio time <-> wall time), pid claims. |
 | `transcriber.py` | Poll loop over all streams. `StreamState` per stream: progress, `Agreement`, timeline. Each loop gives one pass to each stream that is due. Each pass: span from the end of the last closed line, `read_16k`, backend, `vad.speech_end`, `Agreement.step` decides which words to write and where lines close, append to progress. Then `Layout` puts the lines of all streams on one time axis: rewrite `<name>.txt`, print lines that closed, show the open line and the tail as the draft line. |
 | `vad.py` | Silero VAD (bundled with faster-whisper): where the speech in a span ends, with 0.5 s of silence as the end. |
 | `loops.py` | Decoder loop checks: `loop_cut` (an n-gram of 1-8 words 3 or more times in a row) and `has_loop` (also zlib compression ratio > 2.4). |
-| `console.py` | Terminal output of all live processes: `say` (fixed line) and `Draft` (one line that is replaced; agreed words plain, tail dim). |
+| `console.py` | Terminal output of all live processes: `say` (fixed line), `line` (transcript line) and `Draft` (one line that is replaced; agreed words plain, tail dim). With `LIVE_EVENTS=1`, each output is one JSON line instead (`log`, `line`, `draft`, and from `cli.start` `session` and `state`: recording, stopping, finishing, done, failed). |
 | `progress.py` | Append-only JSONL with fsync per write, one file per stream. Truncates a line cut short by a crash. Joins open records into lines. Gives the resume point (end of the last record that is not open) and the prompt. |
 | `audio.py` | `read_16k` (span of the timeline as 16 kHz mono, by seek in the run files), `merge` (all run files of one stream into one FLAC in blocks, decode again to check the frame count), `write_aligned` (2 or more streams: each stream and the mix on the reference time axis, in one pass). |
 | `finalize.py` | Mark stopped, run the transcriber in this process until done, write the FLAC file(s), clean up. |
 | `backends/` | Speech-to-text backends behind one interface. See `backends/ARCHITECTURE.md`. |
+| `native/` | macOS system audio helper (Swift, Core Audio process tap). See `native/ARCHITECTURE.md`. |
 
 ### Streams (`Layout`, `audio.write_aligned`)
 
@@ -77,9 +78,22 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 
 - Transcript times are audio time: the sum of run file lengths. A gap between recorder runs closes up on this axis, and shows as a `(recording gap HH:MM:SS)` line at that point.
 - Wall time of a run file = arrival time of its first block - the block length. A gap is where the next run file starts later than the end of the one before.
-- Loopback only: `RunWriter.anchor` is the wall time of frame 0, set again from each block (arrival - frames written). A block that starts 0.2 s or more after the end of the run gets zeros before it. With no block for 0.5 s, the main loop writes zeros up to now - 0.5 s. Before the first block, the anchor is the stream start.
+- Loopback and tap only: `RunWriter.anchor` is the wall time of frame 0, set again from each block (arrival - frames written). A block that starts 0.2 s or more after the end of the run gets zeros before it. With no block for 0.5 s, the main loop writes zeros up to now - 0.5 s. Before the first block, the anchor is the stream start.
 
 ## Decisions
+
+### macOS capture: Core Audio process tap
+- BlackHole needs a driver install, a restart and a Multi-Output Device made by hand, and macOS volume keys do not work on a Multi-Output Device. A process tap (macOS 14.4+) records the mix of all apps with no driver and no change to the sound output; the user grants "System Audio Recording" once.
+- The tap is in a small Swift helper, not in Python. Its IO block runs on a dispatch queue that Core Audio calls at audio rate; Python callbacks there (pyobjc) would hold the GIL against the recorder thread. The helper writes to a pipe, so the recorder reads it like any other source and the run file rules do not change.
+- The helper writes a JSON header line (rate, channels), then raw float32 frames, and stops when its stdin closes: the same stop signal as the recorder itself.
+- The recorder fills silence with zeros as for loopback (see Time), because a tap can deliver no buffers while nothing plays, and the transcript times must follow the wall clock.
+- A denied permission gives silence, not an error, from the Core Audio calls. The helper checks the permission first (`TCCAccessPreflight`, loaded at run time from the private TCC framework) and exits with a message. `--status` and `--request` let the desktop app show and ask for the permission.
+- In a test (macOS 27, speech played with `afplay` during a 30 s `start --tap` session with `parakeet-mlx`), the transcript was word for word equal to the script, lines printed 2-5 s after speech.
+- The first run of the helper, before the permission prompt was answered, wrote the header and no audio, and hung in `AudioDeviceDestroyIOProcID` at the stop. After the permission was granted it stopped cleanly.
+
+### Control by another program: --stdin-stop and JSON events
+- The desktop app runs `live start` as a child. Ctrl+C cannot be sent to a child without a console on Windows, so `--stdin-stop` makes the end of stdin act as Ctrl+C. It is also how `live start` stops its own children.
+- `LIVE_EVENTS=1` goes to the recorders and the transcriber through the environment, so all processes write JSON lines to the one pipe. The window gets lines, the draft and the state with no parsing of terminal text. Without the variable, the output does not change.
 
 ### Windows capture: WASAPI loopback
 - Loopback records what a playback device plays, with no driver and no change to the sound output, and the user still hears the audio. VB-Cable (a virtual device, like BlackHole) also works with `--device "CABLE Output"` and no code change; it is the choice when the user must not hear the audio.
