@@ -1,0 +1,77 @@
+20260801-Amir’s Lab-Linus Torvalds Explains What Makes Linux So Fast--xbzGngfQEw
+
+[00:00:00] Uh
+[00:00:01] Linus, do you follow any uh development
+[00:00:03] of any new programming languages? Do you
+[00:00:05] see any any uh language except C which
+[00:00:08] is suitable for development of operating
+[00:00:11] system?
+[00:00:13] >> So, I have to say
+[00:00:15] I'm kind of old-fashioned and I'm really
+[00:00:17] interested The reason I got into the
+[00:00:19] Linux in the or operating systems in the
+[00:00:21] first place was I really love hardware.
+[00:00:24] I love tinkering with hardware. I mean I
+[00:00:26] not in the sense that I'm a hardware
+[00:00:27] person. I giving me a soldering iron is
+[00:00:30] a bad idea. But I I like interacting
+[00:00:34] with hardware from a software
+[00:00:35] perspective.
+[00:00:36] And uh
+[00:00:39] I have yet to see a language that comes
+[00:00:41] even close to C in that respect. It's
+[00:00:45] not just that C you can use C to
+[00:00:47] generate good code for hardware. It's
+[00:00:50] that if you think like a computer,
+[00:00:53] writing C actually makes sense. I mean
+[00:00:56] and and I think the reason it works that
+[00:00:58] way is
+[00:01:00] the people who designed C
+[00:01:03] designed it at at a time when you I mean
+[00:01:07] when compilers had to be simple and the
+[00:01:09] language had to be kind of geared
+[00:01:11] towards what the output was.
+[00:01:14] So, when I read C
+[00:01:16] I know what the
+[00:01:18] uh assembly language will look like. And
+[00:01:21] that is something I care about. The I
+[00:01:24] don't do a lot of programming myself
+[00:01:26] anymore. I'm a technical lead person. I
+[00:01:28] merge other people's code.
+[00:01:31] But if you go and look in the Linux Git
+[00:01:33] history
+[00:01:34] and look at what I do
+[00:01:36] the last few months, the kind of code I
+[00:01:39] changed, I made sure are
+[00:01:42] uh file path look up
+[00:01:45] takes as few cache misses as possible.
+[00:01:48] And uh
+[00:01:50] all that code is C, but in order to
+[00:01:53] really be able to it's optimized at the
+[00:01:56] level where I worry about single
+[00:01:59] instructions.
+[00:02:00] Kind of thing.
+[00:02:01] And especially single cash misses. And I
+[00:02:03] love doing that because that's it's
+[00:02:06] completely I mean, to some degree people
+[00:02:08] say you should not micro optimize.
+[00:02:11] But if what you love is micro
+[00:02:13] optimization,
+[00:02:15] that's what you should do. And we made
+[00:02:17] sure our algorithms are are are good
+[00:02:19] before we started the micro
+[00:02:21] optimizations. So, uh I'm very proud of
+[00:02:23] the fact that we look up path names way
+[00:02:26] faster than anybody else. I guarantee
+[00:02:28] it. Right?
+[00:02:29] And we can do it in parallel on a
+[00:02:31] thousand CPU machine with no contention.
+[00:02:35] I mean, that is something that has
+[00:02:38] happened in the last 18 months. And that
+[00:02:40] is impressive. I mean, you don't know
+[00:02:42] how impressive it is until
+[00:02:45] until you've worked with that code for I
+[00:02:47] mean, I thought we'd never get there.
+[00:02:50] But we're there now.
+[00:02:52] So.
+[00:02:53] So, that's the kind of thing that really

@@ -32,26 +32,29 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 | `cli.py` | `start` (spawn both children, handle Ctrl+C, restart a failed transcriber, then finalize), `finalize`, `devices`. |
 | `recorder.py` | Source: an input device (sounddevice, `--device`), or with `--loopback` the WASAPI loopback of a Windows playback device (pyaudiowpatch). Audio callback puts each block on a queue. Main thread gives blocks to `RunWriter`, which appends each one to the run file (raw float32) and flushes it to the OS. One run file per recorder run. With loopback, `RunWriter` fills the time with no blocks with zeros (see Time). Stops when stdin closes. Logs input overflow and 30 s of silence. |
 | `session.py` | Folder layout, run file names, `Timeline` (run files end to end on one audio time axis, gaps), pid claims. |
-| `transcriber.py` | Poll loop. Each pass: span from the last committed `end`, `read_16k`, backend, `Agreement.step` decides which words to write, append to progress, rewrite `<name>.txt`, print new lines, show the words not written as the draft line. |
+| `transcriber.py` | Poll loop. Each pass: span from the end of the last closed line, `read_16k`, backend, `vad.speech_end`, `Agreement.step` decides which words to write and where lines close, append to progress, rewrite `<name>.txt`, print lines that closed, show the open line and the tail as the draft line. |
+| `vad.py` | Silero VAD (bundled with faster-whisper): where the speech in a span ends, with 0.5 s of silence as the end. |
+| `loops.py` | Decoder loop checks: `loop_cut` (an n-gram of 1-8 words 3 or more times in a row) and `has_loop` (also zlib compression ratio > 2.4). |
 | `console.py` | Terminal output of all live processes: `say` (fixed line) and `Draft` (one line that is replaced; agreed words plain, tail dim). |
-| `progress.py` | Append-only JSONL with fsync per write. Truncates a line cut short by a crash. |
+| `progress.py` | Append-only JSONL with fsync per write. Truncates a line cut short by a crash. Joins open records into lines. Gives the resume point (end of the last record that is not open) and the prompt. |
 | `audio.py` | `read_16k` (span of the timeline as 16 kHz mono, by seek in the run files), `merge` (all run files into one FLAC in blocks, decode again to check the frame count). |
 | `finalize.py` | Mark stopped, run the transcriber in this process until done, merge, clean up. |
 | `backends/` | Speech-to-text backends behind one interface. See `backends/ARCHITECTURE.md`. |
 
 ### Commit rules (`transcriber.Agreement`, `plan_span`)
 
-- A span starts at the last written line `end` and is at most 30 s. It ends early at the next recording gap.
-- The backend gives words with times. `Agreement` keeps in memory the words after the last written line: `agreed` (2 passes in a row gave them in the same order, compared by letters and digits only) and `tail` (the rest of the last pass, which can still change).
-- A pass gives the agreed words again, because it starts at the last written line. Words that start before the last agreed word end (- 0.1 s) are removed, then up to 5 words at the start that repeat the end of the agreed words. The words left are compared with the tail. Their common start becomes agreed.
-- Normal pass, written as lines (one per sentence: a line ends at a word with `.`, `?` or `!`):
-  - all words, if the last word ends 1.5 s or more before the span end (speech stopped);
-  - all words except the last, if the span is capped at 30 s;
-  - else the agreed words up to the last sentence end. If there is none and the agreed words cover 8 s or more: up to the last `,` `;` `:`, or all agreed words.
+- A span starts at the end of the last closed line and is at most 30 s. It ends early at the next recording gap.
+- The backend gives words with times. A segment with a loop is cut where the loop repeats (`loops.loop_cut`: the first copy stays). `Agreement` keeps in memory the words after the last closed line: `agreed` (2 passes in a row gave them in the same order, compared by letters and digits only; these are the words of the open line, already written) and `tail` (the rest of the last pass, which can still change).
+- A pass gives the agreed words again, because it starts at the last closed line. Words that start before the last agreed word end (- 0.1 s) are removed, then up to 5 words at the start that repeat the end of the agreed words. The words left are compared with the tail. Their common start becomes agreed.
+- Newly agreed words are written at once into the open line (progress records with `"open": true`). The line closes after a word that ends with `.` `?` `!` when an agreed word comes after it, or when 1.5 s of audio follow it.
+- Silero VAD on the span audio gives where speech ends: the start of 0.5 s or more of silence. If the speech ends before the span end (or the VAD finds no speech), all words are written, tail too, and the line closes.
+- Capped span (30 s): all words except the last are written and the line closes.
 - No word at all: mark the audio done up to span end - 2 s, with a record that has text `""`.
-- Final pass (a stopped session reaches its end, or the span ends at a gap): write all words, mark done to the span end, and empty `agreed` and `tail`.
-- The draft line shows the agreed words not yet written (plain) and the tail (dim).
+- Final pass (a stopped session reaches its end, or the span ends at a gap): write all words, close the line, mark done to the span end, and empty `agreed` and `tail`.
+- Prompt: the last 200 characters of the text of the lines before the span start, in the same recording run. Lines with a loop (`loops.has_loop`) are left out. A word cut by the 200-character limit is left out.
+- The draft line shows the open line (plain) and the tail (dim). A line prints as a fixed line when it closes.
 - A pass runs only when the timeline grew 1 s or more since the last pass, or the backlog is more than 30 s, or the session is stopped. The folder is polled each 0.2 s.
+- Progress records: `{start, end, text}`; `"open": true` means the line goes on in the next record. A record with text `""` closes an open line and marks audio done. On restart, the open records give the agreed words again (times spread evenly over each record).
 
 ### Time
 
@@ -100,22 +103,31 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 - Silence is written as records with text `""`. Without them, the resume point would stay at the last speech and each pass would grow over all the silence after it.
 
 ### Commit rules
-- The words at the end of a span can be cut at the span end, so they wait for more audio. A word is written only when 2 passes agree on it, or when silence follows.
+- The words at the end of a span can be cut at the span end, so they wait for more audio. A word is written only when 2 passes agree on it, or when the VAD finds the end of speech.
 - The first rule committed by segment: all segments but the last. Whisper decides where a segment ends, and it often kept 2 or more sentences, 10 s or longer, as one segment. That segment was always the last one, so it waited. In the end-to-end test, a line showed only 14 s after speech started.
-- Agreement by word (the "LocalAgreement-2" method from the `whisper_streaming` project) writes a line soon after its last word is spoken, independent of where Whisper ends segments. Lines follow sentence ends, not segment ends, so each line is one sentence.
-- The span still starts at the last written line, not at the last agreed word. Thus Whisper hears full sentences, and a restart resumes from the progress file, with no state about agreed words on disk. Agreed words that are not written yet are only in memory. After a crash they are transcribed again.
-- Whisper on part of a sentence often writes a comma where the full sentence has a period. Thus long speech can have no agreed sentence end. The 8 s limit and the break at the last clause mark keep lines short. With 15 s and no clause break, a 17 s test clip gave no line until its end.
-- "No speech" is decided only from no words at all. A span with words that are not written must not move forward: that skipped a full sentence in an end-to-end test.
-- End-to-end test (73 s of real speech played into BlackHole, `base` model), delay from the last word of a line to its print, 2 runs each:
-
-  | Rule | Median | p90 | Max |
-  |---|---|---|---|
-  | segment | 2.8 s | 4.1-6.2 s | 10-11 s |
-  | word agreement | 2.4-3.2 s | 3.0-4.9 s | 4.0-5.5 s |
-
-  Segment lines were cut mid-sentence; word lines are one sentence each. The word rule includes the token cap in `backends/` (see there).
+- Agreement by word (the "LocalAgreement-2" method from the `whisper_streaming` project) writes a word soon after it is spoken, independent of where Whisper ends segments.
+- End-to-end test (73 s of real speech played into BlackHole, `base` model), delay from the last word of a line to its print, 2 runs each: segment rule median 2.8 s, p90 4.1-6.2 s, max 10-11 s; word agreement (lines at agreed sentence ends) median 2.4-3.2 s, p90 3.0-4.9 s, max 4.0-5.5 s. Segment lines were cut mid-sentence. The word rule includes the token cap in `backends/` (see there).
+- The span still starts at the last closed line, not at the last agreed word. Thus Whisper hears full sentences, and a restart resumes from the progress file. The open line is in the progress file, so a restart gets its words back for the overlap check.
+- "No speech" for the silence record is decided only from no words at all. A span with words that are not written must not move forward: that skipped a full sentence in an end-to-end test.
 - A span never crosses a recording gap. Across a gap, Whisper joined the last words of one run to the first words of the next.
-- The prompt (last 5 lines) uses only lines from the same recording run. With the text from before a gap as prompt, Whisper repeated the prompt instead of the new speech.
+- The prompt uses only lines from the same recording run. With the text from before a gap as prompt, Whisper repeated the prompt instead of the new speech.
+
+#### Open line, VAD pause, loop cut, 200-character prompt (2026-11-20)
+- Benchmark: `tests/bench_live.py` on the 2x speed fixture, `base`, real-time feed. Write delay = word in the transcript - word audio on disk.
+
+  | Version | WER | Write delay median / p90 / max | Line delay median | End lag |
+  |---|---|---|---|---|
+  | before (temperature 0, line written at agreed sentence end, 8 s clause rule, pause = last word end 1.5 s before span end, 5-line prompt) | 0.377 | 3.9 / 5.8 / 9.5 s | 4.0 s | 0.5 s |
+  | after (2 runs) | 0.151-0.162 | 2.9-3.5 / 5.2-5.8 / 6.8-10.5 s | 3.9-4.9 s | 0.2-5.8 s |
+
+- Most of the WER before was one loop: "I mean, I mean, …" over 30 s at the end, written as lines. The loop cut, the temperature fallback and the prompt filter stop it.
+- Agreed words are written at once into an open line, so the transcript and the draft get a word one pass after it agrees, not after its sentence ends. The 8 s clause rule is gone: it only existed to bound the wait for a sentence end.
+- A sentence end at the end of the agreed words does not close the line at once. Whisper often writes a period at the cut end of a span ("who designed C." before "designed it at a time when you"). When the line closed there, the next span started mid-word and Whisper dropped the rest of the sentence ("designed it at a time when you" was lost).
+- It closes after 1.5 s of audio without an agreed next word. Whisper often stops its output at a period and leaves the rest of the span out; passes then change between the short and the full text, and no next word agrees. Without this limit the open line waited up to 25 s (write delay median 7.8 s, p90 20 s).
+- The pause comes from Silero VAD, not from the last word end. Word end times from Whisper are not exact, and a word cut at the span end can still end before it. The VAD runs on the span audio again (10 ms for 5 s, 60 ms for 30 s) because faster-whisper does not return its own VAD chunks, and its options (2 s minimum silence, 0.4 s pad) are for cutting audio, not for a pause. The pause is 0.5 s; at 2x speed the fixture rarely has one, so most lines close by sentence end.
+- The VAD speech end is compared with the span length in samples. The span end in seconds and the resampled sample count differ by a rounding error; a check against the span end in seconds took every pass as a pause and wrote unagreed tails (WER 0.40).
+- A loop is an n-gram (1-8 words) 3 or more times in a row. 2 times is normal speech ("and and", "I mean, I mean"). The first copy stays, because it is often real speech that Whisper then repeats.
+- The prompt is the last 200 characters (as in `whisper_streaming`), not a fixed number of lines: 5 long lines filled the prompt with old text, 5 short lines gave almost none. A line with a loop in the prompt makes Whisper continue the loop.
 
 ### Output
 - `<name>.txt` uses `app.stages.common.write.write_full`, so the format is the same as `python -m app` (header `<name>-live`, `[HH:MM:SS] text`). It is rewritten in full after each commit (atomic `.tmp` + rename), so it is always complete.
