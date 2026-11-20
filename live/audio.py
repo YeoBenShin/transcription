@@ -76,25 +76,40 @@ class MergeFailed(Exception):
     pass
 
 
-def write_checked(blocks: Iterator[np.ndarray], target: Path, rate: int, channels: int) -> int:
-    """Write the blocks as one FLAC file at `target`, and return its frame count.
+class CheckedFlac:
+    """A FLAC file that is written as <target>.tmp, checked, and then renamed to target."""
 
-    The result is written as <target>.tmp, decoded again to check the frame count, then renamed
-    to target. Raise MergeFailed if the count is not equal.
-    """
-    tmp = target.with_name(target.name + TMP_SUFFIX)
-    written = 0
-    with soundfile.SoundFile(
-        str(tmp), "w", samplerate=rate, channels=channels, format="FLAC", subtype=SUBTYPE
-    ) as out:
-        for data in blocks:
-            out.write(data)
-            written += len(data)
-    decoded = count_frames(tmp)
-    if decoded != written or soundfile.info(str(tmp)).frames != written:
-        raise MergeFailed(f"{tmp.name}: {decoded} frames decoded, {written} written")
-    tmp.replace(target)
-    return written
+    def __init__(self, target: Path, rate: int, channels: int):
+        self.target = target
+        self.tmp = target.with_name(target.name + TMP_SUFFIX)
+        self.file = soundfile.SoundFile(
+            str(self.tmp), "w", samplerate=rate, channels=channels, format="FLAC", subtype=SUBTYPE
+        )
+        self.written = 0
+
+    def write(self, data: np.ndarray) -> None:
+        self.file.write(data)
+        self.written += len(data)
+
+    def check(self) -> None:
+        """Close the file and decode it again. Raise MergeFailed if the frame count is not the count written."""
+        self.file.close()
+        decoded = count_frames(self.tmp)
+        if decoded != self.written or soundfile.info(str(self.tmp)).frames != self.written:
+            raise MergeFailed(f"{self.tmp.name}: {decoded} frames decoded, {self.written} written")
+
+    def commit(self) -> None:
+        self.tmp.replace(self.target)
+
+
+def write_checked(blocks: Iterator[np.ndarray], target: Path, rate: int, channels: int) -> int:
+    """Write the blocks as one FLAC file at `target` (see CheckedFlac), and return its frame count."""
+    out = CheckedFlac(target, rate, channels)
+    for data in blocks:
+        out.write(data)
+    out.check()
+    out.commit()
+    return out.written
 
 
 def timeline_blocks(files: List[RunFile], rate: int, channels: int) -> Iterator[Tuple[RunFile, int, np.ndarray]]:
@@ -172,25 +187,34 @@ class WallReader:
         return joined[:count]
 
 
-def mix(reference: List[RunFile], others: List[List[RunFile]], target: Path) -> int:
-    """Write the sum of all streams as one FLAC file at `target` on the time axis of `reference`.
+def write_aligned(streams: List[Tuple[List[RunFile], Path]], mix_target: Path) -> int:
+    """Write each stream and the mix of all streams as FLAC files on one time axis, in one pass.
 
-    The rate and channels are the ones of the first reference run file. The audio of each
-    other stream is placed at the same wall time as the reference audio; where it has no
-    audio, it adds nothing. Audio of other streams outside the reference run files is not in
-    the result. The sum is cut to [-1, 1]. The file is checked as in write_checked.
+    streams: (run files, target) per stream. The first stream is the reference: its run files
+    end to end are the time axis, and its first run file gives the rate and channels of all
+    files. For each reference block at wall time W, each other stream is read at W (see
+    WallReader), with zeros where it has no audio. Each stream block goes to its own file; the
+    sum of the blocks, cut to [-1, 1], goes to mix_target. Audio of other streams outside the
+    reference run files is in no file.
+
+    All files have the same frame count, which is returned. All are checked (see CheckedFlac)
+    before any is renamed, and mix_target is renamed last. Raise MergeFailed if a check fails.
     """
+    reference = streams[0][0]
     if not reference:
-        raise MergeFailed("no audio to mix")
+        raise MergeFailed("no audio to merge")
     rate, channels = reference[0].rate, reference[0].channels
-    readers = [WallReader(files, rate, channels) for files in others]
-
-    def blocks():
-        for run, position, data in timeline_blocks(reference, rate, channels):
-            wall = run.wall + timedelta(seconds=position / rate)
-            total = data.copy()
-            for reader in readers:
-                total += reader.read(wall, len(data))
-            yield np.clip(total, -1.0, 1.0)
-
-    return write_checked(blocks(), target, rate, channels)
+    readers = [WallReader(files, rate, channels) for files, _ in streams[1:]]
+    outs = [CheckedFlac(target, rate, channels) for _, target in streams]
+    mixed = CheckedFlac(mix_target, rate, channels)
+    for run, position, data in timeline_blocks(reference, rate, channels):
+        wall = run.wall + timedelta(seconds=position / rate)
+        blocks = [data] + [reader.read(wall, len(data)) for reader in readers]
+        for out, block in zip(outs, blocks):
+            out.write(block)
+        mixed.write(np.clip(np.sum(blocks, axis=0), -1.0, 1.0))
+    for out in outs + [mixed]:
+        out.check()
+    for out in outs + [mixed]:
+        out.commit()
+    return mixed.written

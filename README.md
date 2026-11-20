@@ -309,18 +309,33 @@ To finish a session that stopped before its end (a second Ctrl+C, a crash, a clo
 out/live/YYYYMMDD-HHMMSS-<label>/
   YYYYMMDD-HHMMSS-<label>.txt    transcript, same format as Method 1
   YYYYMMDD-HHMMSS-<label>.flac   full recording, lossless (with --mic: app audio and microphone mixed)
-  YYYYMMDD-HHMMSS-<label>.system.flac, .mic.flac   with --mic only: each source alone
+  YYYYMMDD-HHMMSS-<label>.system.flac, .mic.flac   with --mic only: each source alone, same length and time axis as the mix
 ```
 
 - During the recording the folder also has `system/` and `mic/` (one raw `.pcm` file per recorder run, about 1.4 GB per hour for 48 kHz stereo), `transcript.<stream>.partial.jsonl` and pid files. `finalize` removes them only after the `.flac` files are checked.
 - The live transcript is a draft. For a better transcript, run `python -m app` (Method 1) on the `.flac` with a larger `--model`.
+
+### Better transcript with labels (after `--mic`)
+
+Transcribe each source file, then merge the 2 transcripts by timestamp:
+
+```sh
+.venv/bin/python -m app out/live/<session>/<session>.system.flac --model small
+.venv/bin/python -m app out/live/<session>/<session>.mic.flac --model small
+.venv/bin/python -m transcript_merge Them=out/<date>-<author>-<session>.system.txt Me=out/<date>-<author>-<session>.mic.txt
+```
+
+- Writes `<common start of the names>.txt` next to the first input, with lines like `[00:01:23] Me: text`. `--name` and `--outdir` change the name and folder.
+- Works because the 2 `.flac` files are on the same time axis. Do not use it on transcripts of unrelated files.
+- Timestamps have 1 s resolution. Lines in the same second keep the order of the inputs on the command line.
 
 ## Moving parts
 
 - `app/cli.py`: command line for one input. Calls `pipeline.run`.
 - `app/batch.py`: command line for a folder. Calls `pipeline.run` once per file.
 - `app/web/`: local web page. `backend/` runs `python -m app` per URL. `frontend/` is static HTML, CSS, JS.
-- `live/`: live transcription. One recorder process per source (app audio, and the microphone with `--mic`) appends the audio to a raw `.pcm` file, a transcriber process polls the folder and writes the transcript of all sources, and `finalize` merges the audio into one `.flac`. Uses `app.models` and `app.stages.common` (Whisper model, transcript writer).
+- `live/`: live transcription. One recorder process per source (app audio, and the microphone with `--mic`) appends the audio to a raw `.pcm` file, a transcriber process polls the folder and writes the transcript of all sources, and `finalize` merges the audio into one `.flac` (with `--mic`: also one `.flac` per source, on the same time axis). Uses `app.models` and `app.stages.common` (Whisper model, transcript writer).
+- `transcript_merge/`: merges transcripts that are on one time axis into one, in time order, with a label per input.
 - `bin/transcribe-web`, `bin/transcribe-batch`: executable wrappers for `app.web` and `app.batch`.
 - `app/pipeline.py`: picks a source for the input, then writes `<outdir>/YYYYMMDD-Author-Title.txt`.
 - `app/sources/`: one module per input type. Each one decides which stages to run.

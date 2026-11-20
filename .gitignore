@@ -12,3 +12,6 @@ to-be-transcribe/*
 
 # wrapper script for running the app
 bin/*
+
+# Claude Code worktrees
+.claude/worktrees/

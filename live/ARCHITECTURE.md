@@ -28,7 +28,7 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
   stopped                                   marker: no more audio will come
   recorder.system.pid, recorder.mic.pid, transcriber.pid   one process per role per session
   <name>.flac                               after finalize: the system stream, or with 2 streams the mix
-  <name>.system.flac, <name>.mic.flac       after finalize, with 2 streams only: each stream alone
+  <name>.system.flac, <name>.mic.flac       after finalize, with 2 streams only: each stream alone, same length as the mix
 ```
 
 | File | Role |
@@ -45,7 +45,7 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 | `finalize.py` | Mark stopped, run the transcriber in this process until done, write the FLAC file(s), clean up. |
 | `backends/` | Speech-to-text backends behind one interface. See `backends/ARCHITECTURE.md`. |
 
-### Streams (`Layout`, `audio.mix`)
+### Streams (`Layout`, `audio.write_aligned`)
 
 - A stream is one audio source with its own folder, run files, timeline and progress file. `system` is the audio that the meeting app plays. `mic` (with `--mic`) is the microphone.
 - Each stream is transcribed alone. The commit rules below apply per stream.
@@ -54,7 +54,9 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 - With 2 streams, each line starts with the stream label: `Them:` (system) or `Me:` (mic). Lines are sorted by time on the reference axis. With 1 stream, lines have no label.
 - Gap lines: each gap of the reference. A gap of another stream gets its own line, `(Me: recording gap HH:MM:SS)`, unless a reference gap is within 2 s of it (both recorders stopped).
 - The draft line shows the held words of the stream whose held words start last, with its label.
-- `mix`: for each block of the reference, `WallReader` reads each other stream at the same wall time, at the reference rate and channels, with zeros where it has no audio. The sum is cut to [-1, 1]. Audio of another stream outside the reference run files is not in the mix.
+- `write_aligned` (finalize, 2 or more streams): the reference run files end to end are the time axis. For each block of the reference at wall time W, `WallReader` reads each other stream at W, at the reference rate and channels, with zeros where it has no audio. Each block goes to the file of its stream, and the sum of the blocks, cut to [-1, 1], goes to `<name>.flac`. Thus all files have the same length, and sample N is the same moment in each. Audio of another stream outside the reference run files is in no file.
+- All files are written in one pass, then each is decoded again and checked. Only then are they renamed, `<name>.flac` last.
+- Transcripts of `<name>.system.flac` and `<name>.mic.flac` (from `python -m app`) are on the same time axis, so `transcript_merge` can merge them by timestamp (see `transcript_merge/ARCHITECTURE.md`).
 
 ### Commit rules (`transcriber.Agreement`, `plan_span`)
 
@@ -94,8 +96,11 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 - No echo removal. With speakers, the mic also records the others, so their lines show two times. `start --mic` shows a warning to use headphones. A mic-only mode is the plan for the speakers case.
 - Mute in the meeting app does not mute the OS microphone, so the mic stream records speech during mute. The warning says this.
 - `<name>.flac` is the mix, so `python -m app` on it gives the full meeting. Each stream is also kept alone (`<name>.<stream>.flac`), because a mix cannot be split again.
+- The stream files are on the reference time axis, not each on its own. Each stream on its own axis starts at its own recorder start and closes up its own gaps. Then the transcripts of the 2 files cannot be lined up after finalize, because the wall times are only in the run file names, and finalize removes the run files. On one axis, the transcripts merge by timestamp. FLAC stores the zeros where a stream has no audio in almost no space.
+- One pass for all files: each block of each run file is read and resampled one time.
+- Alignment is by the wall time of each run file start plus the offset in it. The drift between 2 device clocks (about 0.2 s per hour) is not corrected. This is sufficient to put lines in order and to listen, but not for sample-exact work over long sessions.
 - `<name>.flac` is written last, so if it exists, the merge is done and checked.
-- In a test with the same BlackHole audio on the 2 streams, the mix put the mic copy 0.1 ms from the system copy (the 2 run files started 6 ms apart).
+- In a test with the same BlackHole audio on the 2 streams, the mix put the mic copy 0.1 ms from the system copy (the 2 run files started 6 ms apart). With the stream files on one axis: the 3 files had the same frame count, the mic file was 0.17 ms from the system file, and `python -m app` on each gave the same timestamp for each line.
 
 ### Disk between recorder and transcriber
 - Audio goes to disk before transcription, so a transcriber crash, a slow model or a backlog never loses audio. A crash of the recorder loses only the blocks in its queue that are not yet in the run file (≤ 0.2 s). Checked end to end with `kill -9` on the recorder.

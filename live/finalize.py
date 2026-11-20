@@ -3,7 +3,7 @@
 from typing import Optional
 
 from live import backends, console, transcriber
-from live.audio import merge, mix
+from live.audio import merge, write_aligned
 from live.progress import read_header
 from live.session import STREAMS, AlreadyRunning, Session, claim, recorder_role, release, running_pid
 
@@ -31,8 +31,9 @@ def saved_header(session: Session) -> dict:
 def finalize(session: Session, backend_name: Optional[str] = None, model: Optional[str] = None) -> None:
     """Mark the session stopped, transcribe the audio that is left, write the FLAC files, then clean up.
 
-    One stream with audio: <name>.flac. More than one: <name>.<stream>.flac per stream, then
-    <name>.flac with all streams mixed. <name>.flac is written last.
+    One stream with audio: <name>.flac. More than one: <name>.<stream>.flac per stream and
+    <name>.flac with all streams mixed, all on the time axis of the first stream with audio
+    (audio.write_aligned). <name>.flac is renamed into place last.
     The backend and model default to the ones in the progress file header.
     If <name>.flac exists, the merge was done and checked before, so only the clean-up runs.
     Raise AlreadyRunning if a recorder or transcriber still runs for the session.
@@ -64,10 +65,7 @@ def finalize(session: Session, backend_name: Optional[str] = None, model: Option
         frames = merge(files, session.merged)
         console.say(f"merged {len(files)} run file(s): {frames / files[0].rate:.1f} s")
     elif timelines:
-        for stream, timeline in timelines:
-            frames = merge(timeline.files, stream.merged)
-            console.say(f"merged {stream.name}: {len(timeline.files)} run file(s), {frames / timeline.files[0].rate:.1f} s")
-        reference = timelines[0][1].files
-        frames = mix(reference, [timeline.files for _, timeline in timelines[1:]], session.merged)
-        console.say(f"mixed {len(timelines)} streams: {frames / reference[0].rate:.1f} s")
+        frames = write_aligned([(timeline.files, stream.merged) for stream, timeline in timelines], session.merged)
+        names = ", ".join(stream.name for stream, _ in timelines)
+        console.say(f"merged {names} and their mix on one time axis: {frames / timelines[0][1].files[0].rate:.1f} s each")
     cleanup(session)

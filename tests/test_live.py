@@ -879,40 +879,59 @@ def test_caption_is_the_latest_held_words_with_label(session, system, mic):
         state.progress.close()
 
 
-def test_mix_adds_streams_at_the_same_wall_time(system, mic, tmp_path):
+def aligned(system, mic, tmp_path):
+    """write_aligned of system and mic into tmp_path. Return (frames, system data, mic data, mix data)."""
+    frames = audio.write_aligned(
+        [(system.timeline().files, tmp_path / "s.flac"), (mic.timeline().files, tmp_path / "m.flac")],
+        tmp_path / "mix.flac",
+    )
+    read = [soundfile.read(str(tmp_path / n), dtype="float32", always_2d=True)[0] for n in ("s.flac", "m.flac", "mix.flac")]
+    return (frames, *read)
+
+
+def test_aligned_files_share_the_reference_time_axis(system, mic, tmp_path):
     write_run(system, np.full(10 * RATE, 0.1, np.float32), T0)
     write_run(mic, np.full(4 * RATE, 0.2, np.float32), T0 + timedelta(seconds=3))
 
-    frames = audio.mix(system.timeline().files, [mic.timeline().files], tmp_path / "mix.flac")
+    frames, sys_data, mic_data, mix_data = aligned(system, mic, tmp_path)
 
-    data, _ = soundfile.read(str(tmp_path / "mix.flac"), dtype="float32")
-    assert frames == len(data) == 10 * RATE
-    assert np.allclose(data[: 3 * RATE], 0.1, atol=1e-6)
-    assert np.allclose(data[3 * RATE: 7 * RATE], 0.3, atol=1e-6)
-    assert np.allclose(data[7 * RATE:], 0.1, atol=1e-6)
+    assert frames == len(sys_data) == len(mic_data) == len(mix_data) == 10 * RATE
+    assert np.allclose(sys_data, 0.1, atol=1e-6)
+    assert np.allclose(mic_data[: 3 * RATE], 0.0) and np.allclose(mic_data[7 * RATE:], 0.0)
+    assert np.allclose(mic_data[3 * RATE: 7 * RATE], 0.2, atol=1e-6)
+    assert np.allclose(mix_data, sys_data + mic_data, atol=1e-6)
 
 
-def test_mix_converts_rate_and_channels_and_follows_gaps(system, mic, tmp_path, monkeypatch):
+def test_aligned_mic_converts_rate_and_channels_and_follows_gaps(system, mic, tmp_path, monkeypatch):
     monkeypatch.setattr(audio, "BLOCK_FRAMES", 10000)
     write_run(system, np.zeros((2 * 48000, 2), np.float32), T0, rate=48000)
     write_run(system, np.zeros((2 * 48000, 2), np.float32), T0 + timedelta(seconds=12), rate=48000)
     write_run(mic, np.full(14 * RATE, 0.5, np.float32), T0 - timedelta(seconds=1))
 
-    audio.mix(system.timeline().files, [mic.timeline().files], tmp_path / "mix.flac")
+    _, _, mic_data, mix_data = aligned(system, mic, tmp_path)
 
-    data, rate = soundfile.read(str(tmp_path / "mix.flac"), dtype="float32")
-    assert rate == 48000 and data.shape == (4 * 48000, 2)
-    assert np.allclose(data[1000:2 * 48000 - 1000], 0.5, atol=1e-3)  # mic at wall 0-2 s
-    assert np.allclose(data[2 * 48000 + 1000: 3 * 48000 - 1000], 0.5, atol=1e-3)  # mic at wall 12-13 s
-    assert np.allclose(data[3 * 48000 + 1000:], 0.0, atol=1e-3)  # mic ended at wall 13 s
+    assert mic_data.shape == mix_data.shape == (4 * 48000, 2)
+    assert np.allclose(mic_data[1000:2 * 48000 - 1000], 0.5, atol=1e-3)  # mic at wall 0-2 s
+    assert np.allclose(mic_data[2 * 48000 + 1000: 3 * 48000 - 1000], 0.5, atol=1e-3)  # mic at wall 12-13 s
+    assert np.allclose(mic_data[3 * 48000 + 1000:], 0.0, atol=1e-3)  # mic ended at wall 13 s
+    assert np.allclose(mix_data, mic_data, atol=1e-6)
 
 
-def test_mix_cuts_the_sum_to_full_scale(system, mic, tmp_path):
+def test_aligned_mix_cuts_the_sum_to_full_scale(system, mic, tmp_path):
     write_run(system, np.full(RATE, 0.8, np.float32), T0)
     write_run(mic, np.full(RATE, 0.8, np.float32), T0)
-    audio.mix(system.timeline().files, [mic.timeline().files], tmp_path / "mix.flac")
-    data, _ = soundfile.read(str(tmp_path / "mix.flac"), dtype="float32")
-    assert data.max() <= 1.0 and data.min() > 0.99
+    _, sys_data, mic_data, mix_data = aligned(system, mic, tmp_path)
+    assert mix_data.max() <= 1.0 and mix_data.min() > 0.99
+    assert np.allclose(sys_data, 0.8, atol=1e-6) and np.allclose(mic_data, 0.8, atol=1e-6)
+
+
+def test_aligned_failed_check_renames_no_file(system, mic, tmp_path, monkeypatch):
+    write_run(system, np.full(RATE, 0.1, np.float32), T0)
+    write_run(mic, np.full(RATE, 0.1, np.float32), T0)
+    monkeypatch.setattr(audio, "count_frames", lambda path: 0 if path.name == "m.flac.tmp" else RATE)
+    with pytest.raises(audio.MergeFailed, match="m.flac.tmp"):
+        aligned(system, mic, tmp_path)
+    assert not any(p.suffix == ".flac" for p in tmp_path.iterdir())
 
 
 def test_finalize_two_streams_writes_each_stream_and_the_mix(session, system, mic, monkeypatch):
@@ -922,9 +941,10 @@ def test_finalize_two_streams_writes_each_stream_and_the_mix(session, system, mi
 
     finalize_module.finalize(session)
 
-    assert soundfile.info(str(system.merged)).frames == 10 * RATE
-    assert soundfile.info(str(mic.merged)).frames == 4 * RATE
-    assert soundfile.info(str(session.merged)).frames == 10 * RATE
+    for path in (system.merged, mic.merged, session.merged):
+        assert soundfile.info(str(path)).frames == 10 * RATE
+    mic_data, _ = soundfile.read(str(mic.merged), dtype="float32")
+    assert mic_data[3 * RATE + 1] * 1000 == pytest.approx(0.0, abs=1e-3)  # mic time 0 at system time 3 s
     assert "[00:00:03] Me: at 0.0." in session.transcript.read_text()
     assert not system.audio_dir.exists() and not mic.audio_dir.exists()
     assert not system.partial.exists() and not mic.partial.exists()
