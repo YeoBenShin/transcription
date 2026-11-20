@@ -1,7 +1,8 @@
-"""Read a span of the timeline for a backend, and merge all run files into one FLAC file."""
+"""Read a span of the timeline for a backend, merge the run files of a stream into one FLAC file, and mix streams."""
 
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 import numpy as np
 import soundfile
@@ -12,6 +13,7 @@ from live.session import PCM_DTYPE, TMP_SUFFIX, RunFile, Timeline
 
 SUBTYPE = "PCM_24"
 BLOCK_FRAMES = 1 << 20
+CONTINUE_SECONDS = 0.001  # a read this close to the end of the last read continues it
 
 
 def read_frames(run: RunFile, first: int, last: int) -> np.ndarray:
@@ -44,14 +46,14 @@ def read_16k(timeline: Timeline, start: float, end: float) -> np.ndarray:
     return np.concatenate(pieces).astype(np.float32) if pieces else np.zeros(0, np.float32)
 
 
-def converted_blocks(run: RunFile, target_rate: int, target_channels: int):
-    """Yield the frames of a run file in blocks, changed to target_rate and target_channels."""
+def converted_blocks(run: RunFile, target_rate: int, target_channels: int, first: int = 0):
+    """Yield the frames of a run file from frame `first` in blocks, changed to target_rate and target_channels."""
     stream = None
     if run.rate != target_rate:
         stream = soxr.ResampleStream(run.rate, target_rate, target_channels, dtype="float32")
-    for first in range(0, run.frames, BLOCK_FRAMES):
-        last = min(first + BLOCK_FRAMES, run.frames)
-        data = read_frames(run, first, last)
+    for block_first in range(first, run.frames, BLOCK_FRAMES):
+        last = min(block_first + BLOCK_FRAMES, run.frames)
+        data = read_frames(run, block_first, last)
         if data.shape[1] != target_channels:
             data = np.repeat(data.mean(axis=1, keepdims=True), target_channels, axis=1)
         if stream is not None:
@@ -74,28 +76,121 @@ class MergeFailed(Exception):
     pass
 
 
-def merge(files: List[RunFile], target: Path) -> int:
-    """Join run files end to end into one FLAC file at `target`, and return its frame count.
+def write_checked(blocks: Iterator[np.ndarray], target: Path, rate: int, channels: int) -> int:
+    """Write the blocks as one FLAC file at `target`, and return its frame count.
 
-    The rate and channels of the first file are used for all. The files are read in blocks,
-    so memory does not grow with the length. The result is written as <target>.tmp, decoded
-    again to check the frame count, then renamed to target. Raise MergeFailed if the count is
-    not equal.
+    The result is written as <target>.tmp, decoded again to check the frame count, then renamed
+    to target. Raise MergeFailed if the count is not equal.
     """
-    if not files:
-        raise MergeFailed("no audio to merge")
-    rate, channels = files[0].rate, files[0].channels
     tmp = target.with_name(target.name + TMP_SUFFIX)
     written = 0
     with soundfile.SoundFile(
         str(tmp), "w", samplerate=rate, channels=channels, format="FLAC", subtype=SUBTYPE
     ) as out:
-        for run in files:
-            for data in converted_blocks(run, rate, channels):
-                out.write(data)
-                written += len(data)
+        for data in blocks:
+            out.write(data)
+            written += len(data)
     decoded = count_frames(tmp)
     if decoded != written or soundfile.info(str(tmp)).frames != written:
         raise MergeFailed(f"{tmp.name}: {decoded} frames decoded, {written} written")
     tmp.replace(target)
     return written
+
+
+def timeline_blocks(files: List[RunFile], rate: int, channels: int) -> Iterator[Tuple[RunFile, int, np.ndarray]]:
+    """Yield (run file, frame position in it at `rate`, block) for all run files end to end."""
+    for run in files:
+        position = 0
+        for data in converted_blocks(run, rate, channels):
+            yield run, position, data
+            position += len(data)
+
+
+def merge(files: List[RunFile], target: Path) -> int:
+    """Join run files end to end into one FLAC file at `target`, and return its frame count.
+
+    The rate and channels of the first file are used for all. The files are read in blocks,
+    so memory does not grow with the length. The file is checked as in write_checked.
+    """
+    if not files:
+        raise MergeFailed("no audio to merge")
+    rate, channels = files[0].rate, files[0].channels
+    blocks = (data for _, _, data in timeline_blocks(files, rate, channels))
+    return write_checked(blocks, target, rate, channels)
+
+
+def frames_from(files: List[RunFile], wall: datetime, rate: int, channels: int) -> Iterator[np.ndarray]:
+    """Yield the audio of the run files from wall time `wall` on, at rate and channels, with no end.
+
+    Wall time before a run file and between run files gives zeros, as does all time after the last one.
+    """
+    at = wall
+    for run in files:
+        run_end = run.wall + timedelta(seconds=run.seconds)
+        if run_end <= at:
+            continue
+        silence = int(round((run.wall - at).total_seconds() * rate))
+        if silence > 0:
+            yield np.zeros((silence, channels), np.float32)
+            at = run.wall
+        first = int(round((at - run.wall).total_seconds() * run.rate))
+        yield from converted_blocks(run, rate, channels, first)
+        at = run_end
+    while True:
+        yield np.zeros((BLOCK_FRAMES, channels), np.float32)
+
+
+class WallReader:
+    """Reads the audio of a timeline by wall time, at a given rate and channels.
+
+    Reads that follow on from the last one continue the same resample stream. Other reads
+    start again at their wall time.
+    """
+
+    def __init__(self, files: List[RunFile], rate: int, channels: int):
+        self.files = files
+        self.rate = rate
+        self.channels = channels
+        self.source: Optional[Iterator[np.ndarray]] = None
+        self.buffer = np.zeros((0, channels), np.float32)
+        self.next_wall: Optional[datetime] = None
+
+    def read(self, wall: datetime, count: int) -> np.ndarray:
+        """`count` frames from wall time `wall`."""
+        if self.next_wall is None or abs((wall - self.next_wall).total_seconds()) > CONTINUE_SECONDS:
+            self.source = frames_from(self.files, wall, self.rate, self.channels)
+            self.buffer = np.zeros((0, self.channels), np.float32)
+        parts = [self.buffer]
+        have = len(self.buffer)
+        while have < count:
+            data = next(self.source)
+            parts.append(data)
+            have += len(data)
+        joined = np.concatenate(parts)
+        self.buffer = joined[count:]
+        self.next_wall = wall + timedelta(seconds=count / self.rate)
+        return joined[:count]
+
+
+def mix(reference: List[RunFile], others: List[List[RunFile]], target: Path) -> int:
+    """Write the sum of all streams as one FLAC file at `target` on the time axis of `reference`.
+
+    The rate and channels are the ones of the first reference run file. The audio of each
+    other stream is placed at the same wall time as the reference audio; where it has no
+    audio, it adds nothing. Audio of other streams outside the reference run files is not in
+    the result. The sum is cut to [-1, 1]. The file is checked as in write_checked.
+    """
+    if not reference:
+        raise MergeFailed("no audio to mix")
+    rate, channels = reference[0].rate, reference[0].channels
+    readers = [WallReader(files, rate, channels) for files in others]
+
+    def blocks():
+        for run, position, data in timeline_blocks(reference, rate, channels):
+            wall = run.wall + timedelta(seconds=position / rate)
+            total = data.copy()
+            for reader in readers:
+                total += reader.read(wall, len(data))
+            yield np.clip(total, -1.0, 1.0)
+
+    return write_checked(blocks(), target, rate, channels)

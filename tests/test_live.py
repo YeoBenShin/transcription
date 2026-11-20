@@ -21,7 +21,7 @@ from live.backends import Segment, Word
 from live.progress import Progress
 from live import recorder
 from live.recorder import RunWriter
-from live.session import Session, run_name
+from live.session import MIC, SYSTEM, Session, Stream, run_name
 
 RATE = 16000
 T0 = datetime(2026, 11, 18, 14, 0, 0)
@@ -32,31 +32,31 @@ def ramp(start: float, seconds: float) -> np.ndarray:
     return ((start + np.arange(int(seconds * RATE)) / RATE) / 1000).astype(np.float32)
 
 
-def write_run(session: Session, data: np.ndarray, wall: datetime, rate: int = RATE) -> Path:
+def write_run(system: Session, data: np.ndarray, wall: datetime, rate: int = RATE) -> Path:
     """Write `data` (frames, or frames x channels) as the next run file."""
     data = data if data.ndim == 2 else data[:, None]
-    path = session.audio_dir / run_name(session.next_seq(), wall, rate, data.shape[1])
+    path = system.audio_dir / run_name(system.next_seq(), wall, rate, data.shape[1])
     path.write_bytes(data.astype("<f4").tobytes())
     return path
 
 
-def add_runs(session: Session, count: int, seconds: float = 5.0, gap_after: int = 0, gap: float = 0.0) -> None:
+def add_runs(system: Session, count: int, seconds: float = 5.0, gap_after: int = 0, gap: float = 0.0) -> None:
     """Add `count` run files after the existing ones. Add a wall-clock gap after run `gap_after`."""
-    timeline = session.timeline()
+    timeline = system.timeline()
     start = timeline.total
     wall = T0 + timedelta(seconds=start + sum(g.seconds for g in timeline.gaps()))
     for _ in range(count):
-        seq = session.next_seq()
-        write_run(session, ramp(start, seconds), wall)
+        seq = system.next_seq()
+        write_run(system, ramp(start, seconds), wall)
         start += seconds
         wall += timedelta(seconds=seconds + (gap if seq == gap_after else 0.0))
 
 
-def grow(session: Session, seconds: float) -> None:
+def grow(system: Session, seconds: float) -> None:
     """Append `seconds` of audio to the last run file, as the recorder does."""
-    path = session.run_paths()[-1]
+    path = system.run_paths()[-1]
     with open(path, "ab") as handle:
-        handle.write(ramp(session.timeline().total, seconds).astype("<f4").tobytes())
+        handle.write(ramp(system.timeline().total, seconds).astype("<f4").tobytes())
 
 
 class FakeBackend:
@@ -91,14 +91,14 @@ class FakeBackend:
 class GrowingBackend(FakeBackend):
     """FakeBackend that adds `seconds` of audio to the session after each call, as a recorder does."""
 
-    def __init__(self, session, seconds=1.0):
+    def __init__(self, system, seconds=1.0):
         super().__init__()
-        self.session = session
+        self.system = system
         self.seconds = seconds
 
     def transcribe(self, samples, prompt):
         segments = super().transcribe(samples, prompt)
-        grow(self.session, self.seconds)
+        grow(self.system, self.seconds)
         return segments
 
 
@@ -107,92 +107,99 @@ def session(tmp_path: Path) -> Session:
     return Session.create(tmp_path / "out", "test", now=T0)
 
 
-def texts(session: Session):
-    return [r["text"] for r in Progress(session.partial, {}).records if r["text"]]
+@pytest.fixture
+def system(session: Session) -> Stream:
+    stream = session.stream(SYSTEM)
+    stream.audio_dir.mkdir()
+    return stream
+
+
+def texts(system: Session):
+    return [r["text"] for r in Progress(system.partial, {}).records if r["text"]]
 
 
 # --- recorder run writer ---
 
-def test_writer_appends_blocks_to_one_run_file(session):
-    writer = RunWriter(session, rate=1000, channels=2)
+def test_writer_appends_blocks_to_one_run_file(session, system):
+    writer = RunWriter(system, rate=1000, channels=2)
     for i in range(9):
         writer.add(np.full((500, 2), i, np.float32), arrived=T0.timestamp() + 0.5)
 
-    [path] = session.run_paths()
+    [path] = system.run_paths()
     assert path.name == "000001-20261118T140000.000-1000x2.pcm"
-    timeline = session.timeline()
+    timeline = system.timeline()
     assert timeline.total == 4.5
     assert timeline.gaps() == []
     assert audio.read_frames(timeline.files[0], 4000, 4001).tolist() == [[8.0, 8.0]]
     writer.close()
-    assert session.timeline().total == 4.5
+    assert system.timeline().total == 4.5
 
 
-def test_second_run_continues_sequence_and_shows_gap(session):
-    first = RunWriter(session, 1000, 1)
+def test_second_run_continues_sequence_and_shows_gap(session, system):
+    first = RunWriter(system, 1000, 1)
     first.add(np.zeros((2000, 1), np.float32), arrived=T0.timestamp() + 2)
     first.close()
-    second = RunWriter(session, 1000, 1)
+    second = RunWriter(system, 1000, 1)
     second.add(np.zeros((2000, 1), np.float32), arrived=T0.timestamp() + 14)
 
-    timeline = session.timeline()
+    timeline = system.timeline()
     assert [f.seq for f in timeline.files] == [1, 2]
     [gap] = timeline.gaps()
     assert gap.at == 2.0
     assert gap.seconds == pytest.approx(10.0, abs=0.01)
 
 
-def frames_of(session):
-    [run] = session.timeline().files
+def frames_of(system):
+    [run] = system.timeline().files
     return audio.read_frames(run, 0, run.frames)[:, 0]
 
 
-def test_fill_gaps_adds_silence_from_stream_start(session):
-    writer = RunWriter(session, 1000, 1, fill_gaps=True)
+def test_fill_gaps_adds_silence_from_stream_start(session, system):
+    writer = RunWriter(system, 1000, 1, fill_gaps=True)
     start = T0.timestamp()
     writer.begin(start)
     writer.idle(start + 0.3)  # 0.3 s with no block: still within IDLE_SECONDS
-    assert session.run_paths() == []
+    assert system.run_paths() == []
     writer.idle(start + 2.5)
     writer.add(np.ones((500, 1), np.float32), arrived=start + 3.0)
 
-    [path] = session.run_paths()
+    [path] = system.run_paths()
     assert path.name == "000001-20261118T140000.000-1000x1.pcm"
-    data = frames_of(session)
+    data = frames_of(system)
     assert len(data) == 3000
     assert data[:2500].max() == 0 and data[2500:].min() == 1
 
 
-def test_fill_gaps_adds_silence_between_blocks(session):
-    writer = RunWriter(session, 1000, 1, fill_gaps=True)
+def test_fill_gaps_adds_silence_between_blocks(session, system):
+    writer = RunWriter(system, 1000, 1, fill_gaps=True)
     start = T0.timestamp()
     writer.begin(start)
     writer.add(np.ones((1000, 1), np.float32), arrived=start + 1.0)
     writer.idle(start + 1.2)
     writer.add(np.ones((1000, 1), np.float32), arrived=start + 5.0)  # source silent from 1.0 to 4.0
 
-    data = frames_of(session)
+    data = frames_of(system)
     assert len(data) == 5000
     assert data[1000:4000].max() == 0 and data[4000:].min() == 1
 
 
-def test_fill_gaps_ignores_jitter(session):
-    writer = RunWriter(session, 1000, 1, fill_gaps=True)
+def test_fill_gaps_ignores_jitter(session, system):
+    writer = RunWriter(system, 1000, 1, fill_gaps=True)
     start = T0.timestamp()
     writer.begin(start)
     for i, late in enumerate([0.0, 0.15, 0.0, 0.1]):  # blocks of 0.1 s, some arrive late
         writer.add(np.ones((100, 1), np.float32), arrived=start + 0.1 * (i + 1) + late)
         writer.idle(start + 0.1 * (i + 1) + late)
-    assert frames_of(session).min() == 1
+    assert frames_of(system).min() == 1
     assert writer.frames == 400
 
 
-def test_writer_without_fill_gaps_writes_only_blocks(session):
-    writer = RunWriter(session, 1000, 1)
+def test_writer_without_fill_gaps_writes_only_blocks(session, system):
+    writer = RunWriter(system, 1000, 1)
     writer.begin(T0.timestamp())
     writer.idle(T0.timestamp() + 10)
     writer.add(np.ones((1000, 1), np.float32), arrived=T0.timestamp() + 20)
-    assert len(frames_of(session)) == 1000
+    assert len(frames_of(system)) == 1000
 
 
 class FakePyAudio:
@@ -261,44 +268,49 @@ def test_loopback_needs_windows(monkeypatch):
             pass
 
 
-def test_start_passes_source_to_recorder():
+def test_start_passes_sources_to_recorders():
     from argparse import Namespace
 
-    from live.cli import recorder_source
+    from live.cli import recorder_sources
 
-    assert recorder_source(Namespace(loopback=False, device=None)) == ["--device", "BlackHole"]
-    assert recorder_source(Namespace(loopback=False, device="Cable")) == ["--device", "Cable"]
-    assert recorder_source(Namespace(loopback=True, device=None)) == ["--loopback"]
-    assert recorder_source(Namespace(loopback=True, device="Head")) == ["--loopback", "--device", "Head"]
+    def sources(loopback=False, device=None, mic=None):
+        return recorder_sources(Namespace(loopback=loopback, device=device, mic=mic))
 
-
-def test_other_files_are_not_run_files(session):
-    add_runs(session, 1)
-    (session.audio_dir / "000002-20261118T140005.000.flac.tmp").write_bytes(b"x")
-    (session.audio_dir / "notes.pcm").write_bytes(b"x")
-    assert len(session.run_paths()) == 1
-    assert session.next_seq() == 2
+    assert sources() == {"system": ["--device", "BlackHole"]}
+    assert sources(device="Cable") == {"system": ["--device", "Cable"]}
+    assert sources(loopback=True) == {"system": ["--loopback"]}
+    assert sources(loopback=True, device="Head") == {"system": ["--loopback", "--device", "Head"]}
+    assert sources(mic="") == {"system": ["--device", "BlackHole"], "mic": []}
+    assert sources(loopback=True, mic="USB") == {"system": ["--loopback"], "mic": ["--device", "USB"]}
 
 
-def test_run_file_counts_only_complete_frames(session):
-    path = write_run(session, ramp(0, 1.0), T0)
+def test_other_files_are_not_run_files(session, system):
+    add_runs(system, 1)
+    (system.audio_dir / "000002-20261118T140005.000.flac.tmp").write_bytes(b"x")
+    (system.audio_dir / "notes.pcm").write_bytes(b"x")
+    assert len(system.run_paths()) == 1
+    assert system.next_seq() == 2
+
+
+def test_run_file_counts_only_complete_frames(session, system):
+    path = write_run(system, ramp(0, 1.0), T0)
     with open(path, "ab") as handle:
         handle.write(b"xyz")
-    assert session.timeline().total == 1.0
+    assert system.timeline().total == 1.0
 
 
-def test_empty_run_file_is_not_on_timeline(session):
-    add_runs(session, 1)
-    write_run(session, np.zeros(0, np.float32), T0 + timedelta(seconds=60))
-    timeline = session.timeline()
+def test_empty_run_file_is_not_on_timeline(session, system):
+    add_runs(system, 1)
+    write_run(system, np.zeros(0, np.float32), T0 + timedelta(seconds=60))
+    timeline = system.timeline()
     assert len(timeline.files) == 1
     assert timeline.gaps() == []
 
 
-def test_growing_run_file_extends_timeline(session):
-    add_runs(session, 1, seconds=2.0)
-    grow(session, 1.5)
-    timeline = session.timeline()
+def test_growing_run_file_extends_timeline(session, system):
+    add_runs(system, 1, seconds=2.0)
+    grow(system, 1.5)
+    timeline = system.timeline()
     assert timeline.total == 3.5
     samples = audio.read_16k(timeline, 1.0, 3.5)
     assert samples[-1] * 1000 == pytest.approx(3.5, abs=1e-3)
@@ -461,9 +473,9 @@ def wide_terminal(monkeypatch):
     return out
 
 
-def test_live_pass_shows_draft_then_fixed_line_replaces_it(session, monkeypatch):
+def test_live_pass_shows_draft_then_fixed_line_replaces_it(session, monkeypatch, system):
     out = wide_terminal(monkeypatch)
-    add_runs(session, 1, seconds=10.0)
+    add_runs(system, 1, seconds=10.0)
     backend = FakeBackend()
     transcriber.run(session, backend, should_exit=lambda: backend.calls >= 1, poll=0)
     tail = " ".join(f"at {s}.0." for s in range(0, 9, 2))
@@ -476,9 +488,9 @@ def test_live_pass_shows_draft_then_fixed_line_replaces_it(session, monkeypatch)
     assert console.DIM not in out.text
 
 
-def test_no_draft_when_stdout_is_not_a_terminal(session, capsys):
-    add_runs(session, 1, seconds=10.0)
-    backend = GrowingBackend(session)
+def test_no_draft_when_stdout_is_not_a_terminal(session, capsys, system):
+    add_runs(system, 1, seconds=10.0)
+    backend = GrowingBackend(system)
     transcriber.run(session, backend, should_exit=lambda: backend.calls >= 2, poll=0)
     assert capsys.readouterr().out == "".join(f"[00:00:0{s}] at {s}.0.\n" for s in (0, 2, 4, 6, 8))
 
@@ -488,35 +500,35 @@ def test_no_draft_when_stdout_is_not_a_terminal(session, capsys):
 ALL_15 = [f"at {s}.0." for s in range(0, 15, 2)]
 
 
-def test_stopped_session_is_transcribed_to_the_end(session):
-    add_runs(session, 3)
+def test_stopped_session_is_transcribed_to_the_end(session, system):
+    add_runs(system, 3)
     session.mark_stopped()
 
     assert transcriber.run(session, FakeBackend(), poll=0)
 
-    assert texts(session) == ALL_15
-    assert Progress(session.partial, {}).end == pytest.approx(15.0)
+    assert texts(system) == ALL_15
+    assert Progress(system.partial, {}).end == pytest.approx(15.0)
     body = session.transcript.read_text().splitlines()
     assert body[0] == f"{session.name}-live"
     assert body[2:] == [f"[00:00:{s:02d}] at {s}.0." for s in range(0, 15, 2)]
 
 
-def test_live_passes_write_agreed_sentences_then_continue(session):
-    add_runs(session, 1, seconds=10.0)
-    backend = GrowingBackend(session)
+def test_live_passes_write_agreed_sentences_then_continue(session, system):
+    add_runs(system, 1, seconds=10.0)
+    backend = GrowingBackend(system)
     assert not transcriber.run(session, backend, should_exit=lambda: backend.calls >= 2, poll=0)
-    assert texts(session) == [f"at {s}.0." for s in range(0, 9, 2)]
-    assert Progress(session.partial, {}).end == pytest.approx(9.5)
+    assert texts(system) == [f"at {s}.0." for s in range(0, 9, 2)]
+    assert Progress(system.partial, {}).end == pytest.approx(9.5)
 
-    grow(session, 4.0)
+    grow(system, 4.0)
     session.mark_stopped()
     assert transcriber.run(session, FakeBackend(), poll=0)
     # 2 passes grew the audio to 12 s, then 4 s more: the last segment starts 0.5 s before the end.
-    assert texts(session)[5:] == ["at 9.5.", "at 11.5.", "at 13.5.", "at"]
+    assert texts(system)[5:] == ["at 9.5.", "at 11.5.", "at 13.5.", "at"]
 
 
-def test_live_pass_waits_for_step_of_new_audio(session):
-    add_runs(session, 1, seconds=4.0)
+def test_live_pass_waits_for_step_of_new_audio(session, system):
+    add_runs(system, 1, seconds=4.0)
     backend = FakeBackend()
     polls = []
 
@@ -528,31 +540,31 @@ def test_live_pass_waits_for_step_of_new_audio(session):
     assert backend.calls == 1
 
 
-def test_resume_after_crash_removes_cut_line_and_continues(session):
-    add_runs(session, 1, seconds=10.0)
-    backend = GrowingBackend(session, seconds=5.0)
+def test_resume_after_crash_removes_cut_line_and_continues(session, system):
+    add_runs(system, 1, seconds=10.0)
+    backend = GrowingBackend(system, seconds=5.0)
     transcriber.run(session, backend, should_exit=lambda: backend.calls >= 2, poll=0)
-    assert texts(session) == [f"at {s}.0." for s in range(0, 9, 2)]
-    with session.partial.open("a") as handle:
+    assert texts(system) == [f"at {s}.0." for s in range(0, 9, 2)]
+    with system.partial.open("a") as handle:
         handle.write('{"start": 99, "en')
     session.mark_stopped()
 
     assert transcriber.run(session, FakeBackend(), poll=0)
-    assert texts(session)[5:] == ["at 9.5.", "at 11.5.", "at 13.5.", "at 15.5.", "at 17.5.", "at"]
+    assert texts(system)[5:] == ["at 9.5.", "at 11.5.", "at 13.5.", "at 15.5.", "at 17.5.", "at"]
 
 
-def test_pass_stops_at_gap_and_commits_all_before_it(session):
-    add_runs(session, 2, gap_after=1, gap=30.0)
+def test_pass_stops_at_gap_and_commits_all_before_it(session, system):
+    add_runs(system, 2, gap_after=1, gap=30.0)
     backend = FakeBackend()
     transcriber.run(session, backend, should_exit=lambda: backend.calls >= 1, poll=0)
 
-    records = Progress(session.partial, {}).records
+    records = Progress(system.partial, {}).records
     assert records[-1]["end"] == 5.0
     assert [r["text"] for r in records if r["text"]] == ["at 0.0.", "at 2.0.", "at 4.0."]
 
 
-def test_prompt_does_not_cross_gap(session):
-    add_runs(session, 2, gap_after=1, gap=30.0)
+def test_prompt_does_not_cross_gap(session, system):
+    add_runs(system, 2, gap_after=1, gap=30.0)
     session.mark_stopped()
     prompts = []
 
@@ -565,8 +577,8 @@ def test_prompt_does_not_cross_gap(session):
     assert prompts == [None, None]
 
 
-def test_gap_line_in_transcript(session):
-    add_runs(session, 2, gap_after=1, gap=30.0)
+def test_gap_line_in_transcript(session, system):
+    add_runs(system, 2, gap_after=1, gap=30.0)
     session.mark_stopped()
     transcriber.run(session, FakeBackend(), poll=0)
 
@@ -576,9 +588,9 @@ def test_gap_line_in_transcript(session):
 
 # --- merge and finalize ---
 
-def test_merge_joins_run_files_exactly(session, tmp_path):
-    add_runs(session, 3, seconds=2.5)
-    files = session.timeline().files
+def test_merge_joins_run_files_exactly(session, tmp_path, system):
+    add_runs(system, 3, seconds=2.5)
+    files = system.timeline().files
     target = tmp_path / "merged.flac"
 
     frames = audio.merge(files, target)
@@ -588,24 +600,24 @@ def test_merge_joins_run_files_exactly(session, tmp_path):
     assert np.allclose(data, ramp(0, 7.5), atol=2 ** -22)
 
 
-def test_merge_converts_other_rate_and_channels(session, tmp_path):
-    add_runs(session, 1, seconds=1.0)
-    write_run(session, np.zeros((48000, 2), np.float32), T0 + timedelta(seconds=1), rate=48000)
+def test_merge_converts_other_rate_and_channels(session, tmp_path, system):
+    add_runs(system, 1, seconds=1.0)
+    write_run(system, np.zeros((48000, 2), np.float32), T0 + timedelta(seconds=1), rate=48000)
 
-    frames = audio.merge(session.timeline().files, tmp_path / "m.flac")
+    frames = audio.merge(system.timeline().files, tmp_path / "m.flac")
 
     info = soundfile.info(str(tmp_path / "m.flac"))
     assert (info.samplerate, info.channels, info.frames) == (RATE, 1, frames)
     assert frames == pytest.approx(2 * RATE, abs=2)
 
 
-def test_merge_resamples_in_blocks_like_one_piece(session, tmp_path, monkeypatch):
-    add_runs(session, 1, seconds=1.0)
+def test_merge_resamples_in_blocks_like_one_piece(session, tmp_path, monkeypatch, system):
+    add_runs(system, 1, seconds=1.0)
     tone = np.sin(np.arange(3 * 48000) * 2 * np.pi * 440 / 48000).astype(np.float32) * 0.5
-    write_run(session, tone, T0 + timedelta(seconds=1), rate=48000)
+    write_run(system, tone, T0 + timedelta(seconds=1), rate=48000)
     monkeypatch.setattr(audio, "BLOCK_FRAMES", 10000)
 
-    frames = audio.merge(session.timeline().files, tmp_path / "m.flac")
+    frames = audio.merge(system.timeline().files, tmp_path / "m.flac")
 
     data, _ = soundfile.read(str(tmp_path / "m.flac"), dtype="float32")
     whole = audio.soxr.resample(tone, 48000, RATE)
@@ -614,50 +626,192 @@ def test_merge_resamples_in_blocks_like_one_piece(session, tmp_path, monkeypatch
     assert np.abs(data[RATE:RATE + n] - whole[:n]).max() < 1e-3
 
 
-def test_read_16k_spans_run_files(session):
-    add_runs(session, 2)
-    samples = audio.read_16k(session.timeline(), 4.0, 6.0)
+def test_read_16k_spans_run_files(session, system):
+    add_runs(system, 2)
+    samples = audio.read_16k(system.timeline(), 4.0, 6.0)
     assert len(samples) == 2 * RATE
     assert samples[0] * 1000 == pytest.approx(4.0, abs=1e-3)
     assert samples[-1] * 1000 == pytest.approx(6.0, abs=1e-3)
 
 
-def test_finalize_writes_txt_and_flac_and_removes_work_files(session, monkeypatch):
+def test_finalize_writes_txt_and_flac_and_removes_work_files(session, monkeypatch, system):
     monkeypatch.setattr(backends, "make", lambda name, model: FakeBackend())
-    add_runs(session, 2)
+    add_runs(system, 2)
 
     finalize_module.finalize(session)
 
     assert session.transcript.read_text().splitlines()[2] == "[00:00:00] at 0.0."
     assert soundfile.info(str(session.merged)).frames == 10 * RATE
-    assert not session.audio_dir.exists()
-    assert not session.partial.exists()
+    assert not system.audio_dir.exists()
+    assert not system.partial.exists()
     assert not session.is_stopped()
 
 
-def test_finalize_keeps_run_files_when_merge_check_fails(session, monkeypatch):
+def test_finalize_keeps_run_files_when_merge_check_fails(session, monkeypatch, system):
     monkeypatch.setattr(backends, "make", lambda name, model: FakeBackend())
     monkeypatch.setattr(audio, "count_frames", lambda path: 0)
-    add_runs(session, 2)
+    add_runs(system, 2)
 
     with pytest.raises(audio.MergeFailed):
         finalize_module.finalize(session)
 
-    assert len(session.run_paths()) == 2
-    assert session.partial.exists()
+    assert len(system.run_paths()) == 2
+    assert system.partial.exists()
     assert not session.merged.exists()
 
 
-def test_finalize_after_merge_only_cleans_up(session, monkeypatch):
+def test_finalize_after_merge_only_cleans_up(session, monkeypatch, system):
     def no_backend(name, model):
         raise AssertionError("must not transcribe again")
 
-    add_runs(session, 1)
+    add_runs(system, 1)
     session.merged.write_bytes(b"checked before")
-    session.partial.write_text('{"header": {}}\n')
+    system.partial.write_text('{"header": {}}\n')
     monkeypatch.setattr(backends, "make", no_backend)
 
     finalize_module.finalize(session)
 
     assert session.merged.read_bytes() == b"checked before"
-    assert not session.audio_dir.exists()
+    assert not system.audio_dir.exists()
+
+
+# --- two streams (system + mic) ---
+
+
+@pytest.fixture
+def mic(session: Session) -> Stream:
+    stream = session.stream(MIC)
+    stream.audio_dir.mkdir()
+    return stream
+
+
+def test_timeline_maps_wall_time_both_ways(system):
+    add_runs(system, 2, gap_after=1, gap=10.0)  # audio 0-5 s at wall 0-5 s, audio 5-10 s at wall 15-20 s
+    timeline = system.timeline()
+    assert timeline.wall_at(2.0) == T0 + timedelta(seconds=2)
+    assert timeline.wall_at(6.0) == T0 + timedelta(seconds=16)
+    assert timeline.time_at(T0 - timedelta(seconds=1)) == 0.0
+    assert timeline.time_at(T0 + timedelta(seconds=3)) == 3.0
+    assert timeline.time_at(T0 + timedelta(seconds=8)) == 5.0  # in the gap: start of the next run
+    assert timeline.time_at(T0 + timedelta(seconds=17)) == 7.0
+    assert timeline.time_at(T0 + timedelta(seconds=22)) == 12.0  # after the end: not cut
+
+
+def test_two_streams_give_labelled_lines_in_wall_time_order(session, system, mic):
+    add_runs(system, 2)  # 10 s from T0
+    write_run(mic, ramp(0, 4.0), T0 + timedelta(seconds=3))  # 4 s from T0 + 3 s
+    session.mark_stopped()
+
+    assert transcriber.run(session, FakeBackend(), poll=0)
+
+    body = session.transcript.read_text().splitlines()[2:]
+    assert body == [
+        "[00:00:00] Them: at 0.0.",
+        "[00:00:02] Them: at 2.0.",
+        "[00:00:03] Me: at 0.0.",
+        "[00:00:04] Them: at 4.0.",
+        "[00:00:05] Me: at 2.0.",
+        "[00:00:06] Them: at 6.0.",
+        "[00:00:08] Them: at 8.0.",
+    ]
+    assert texts(mic) == ["at 0.0.", "at 2.0."]
+    assert Progress(mic.partial, {}).end == pytest.approx(4.0)
+
+
+def test_one_stream_has_no_labels(session, system):
+    add_runs(system, 1)
+    session.mark_stopped()
+    transcriber.run(session, FakeBackend(), poll=0)
+    assert session.transcript.read_text().splitlines()[2] == "[00:00:00] at 0.0."
+
+
+def test_mic_gap_gets_own_line_unless_system_stopped_too(session, system, mic):
+    add_runs(system, 2, gap_after=1, gap=30.0)  # system: wall 0-5 s, then 35-40 s
+    write_run(mic, ramp(0, 1.0), T0)
+    write_run(mic, ramp(1, 2.0), T0 + timedelta(seconds=2))  # mic only: 1 s gap at wall 1 s
+    write_run(mic, ramp(3, 2.0), T0 + timedelta(seconds=35))  # both stopped
+    session.mark_stopped()
+
+    transcriber.run(session, FakeBackend(), poll=0)
+
+    body = session.transcript.read_text()
+    assert "[00:00:02] (Me: recording gap 00:00:01)\n" in body
+    assert "[00:00:05] (recording gap 00:00:30)\n" in body
+    assert "Me: recording gap 00:00:28" not in body
+
+
+def test_caption_is_the_latest_held_words_with_label(session, system, mic):
+    add_runs(system, 1)
+    write_run(mic, ramp(0, 2.0), T0 + timedelta(seconds=2))
+    states = [transcriber.StreamState(s, FakeBackend()) for s in (system, mic)]
+    states[0].caption = console.Caption(1.0, "a", "b")
+    states[1].caption = console.Caption(0.5, "c", "")  # mic time 0.5 s = system time 2.5 s
+    caption = transcriber.Layout(states).caption()
+    assert (caption.start, caption.agreed, caption.label) == (2.5, "c", "Me")
+    for state in states:
+        state.progress.close()
+
+
+def test_mix_adds_streams_at_the_same_wall_time(system, mic, tmp_path):
+    write_run(system, np.full(10 * RATE, 0.1, np.float32), T0)
+    write_run(mic, np.full(4 * RATE, 0.2, np.float32), T0 + timedelta(seconds=3))
+
+    frames = audio.mix(system.timeline().files, [mic.timeline().files], tmp_path / "mix.flac")
+
+    data, _ = soundfile.read(str(tmp_path / "mix.flac"), dtype="float32")
+    assert frames == len(data) == 10 * RATE
+    assert np.allclose(data[: 3 * RATE], 0.1, atol=1e-6)
+    assert np.allclose(data[3 * RATE: 7 * RATE], 0.3, atol=1e-6)
+    assert np.allclose(data[7 * RATE:], 0.1, atol=1e-6)
+
+
+def test_mix_converts_rate_and_channels_and_follows_gaps(system, mic, tmp_path, monkeypatch):
+    monkeypatch.setattr(audio, "BLOCK_FRAMES", 10000)
+    write_run(system, np.zeros((2 * 48000, 2), np.float32), T0, rate=48000)
+    write_run(system, np.zeros((2 * 48000, 2), np.float32), T0 + timedelta(seconds=12), rate=48000)
+    write_run(mic, np.full(14 * RATE, 0.5, np.float32), T0 - timedelta(seconds=1))
+
+    audio.mix(system.timeline().files, [mic.timeline().files], tmp_path / "mix.flac")
+
+    data, rate = soundfile.read(str(tmp_path / "mix.flac"), dtype="float32")
+    assert rate == 48000 and data.shape == (4 * 48000, 2)
+    assert np.allclose(data[1000:2 * 48000 - 1000], 0.5, atol=1e-3)  # mic at wall 0-2 s
+    assert np.allclose(data[2 * 48000 + 1000: 3 * 48000 - 1000], 0.5, atol=1e-3)  # mic at wall 12-13 s
+    assert np.allclose(data[3 * 48000 + 1000:], 0.0, atol=1e-3)  # mic ended at wall 13 s
+
+
+def test_mix_cuts_the_sum_to_full_scale(system, mic, tmp_path):
+    write_run(system, np.full(RATE, 0.8, np.float32), T0)
+    write_run(mic, np.full(RATE, 0.8, np.float32), T0)
+    audio.mix(system.timeline().files, [mic.timeline().files], tmp_path / "mix.flac")
+    data, _ = soundfile.read(str(tmp_path / "mix.flac"), dtype="float32")
+    assert data.max() <= 1.0 and data.min() > 0.99
+
+
+def test_finalize_two_streams_writes_each_stream_and_the_mix(session, system, mic, monkeypatch):
+    monkeypatch.setattr(backends, "make", lambda name, model: FakeBackend())
+    add_runs(system, 2)
+    write_run(mic, ramp(0, 4.0), T0 + timedelta(seconds=3))
+
+    finalize_module.finalize(session)
+
+    assert soundfile.info(str(system.merged)).frames == 10 * RATE
+    assert soundfile.info(str(mic.merged)).frames == 4 * RATE
+    assert soundfile.info(str(session.merged)).frames == 10 * RATE
+    assert "[00:00:03] Me: at 0.0." in session.transcript.read_text()
+    assert not system.audio_dir.exists() and not mic.audio_dir.exists()
+    assert not system.partial.exists() and not mic.partial.exists()
+
+
+def test_finalize_waits_for_mic_recorder(session, system, mic):
+    add_runs(system, 1)
+    (session.folder / "recorder.mic.pid").write_text(str(os.getppid()))
+    with pytest.raises(finalize_module.AlreadyRunning, match="mic recorder"):
+        finalize_module.finalize(session)
+
+
+def test_mic_writer_writes_to_mic_folder(mic):
+    writer = RunWriter(mic, 1000, 1)
+    writer.add(np.ones((500, 1), np.float32), arrived=T0.timestamp() + 0.5)
+    writer.close()
+    assert [p.parent.name for p in mic.run_paths()] == ["mic"]

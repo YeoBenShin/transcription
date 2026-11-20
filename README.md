@@ -274,6 +274,19 @@ Windows:
 - `--session <folder>` continues a session that is not finalized (for example after a crash). The transcript shows the missing time as `(recording gap HH:MM:SS)`.
 - `--backend` selects the speech-to-text backend. Only `faster-whisper` now.
 
+### Include your own voice (`--mic`)
+
+```sh
+.venv/bin/python -m live start --mic [--label weekly-call]            # default input device
+.venv/bin/python -m live start --mic "MacBook Pro Microphone"         # input device by name (part of it)
+```
+
+- Records the microphone as a second stream and transcribes it separately. Each line gets a label: `Me:` (microphone) or `Them:` (the app audio), for example `[00:01:23] Me: text`.
+- Use headphones. With speakers, the microphone also hears the others, and their lines show two times.
+- Mute in Zoom or Teams does not stop this recording. What you say during mute is also transcribed.
+- The terminal app needs microphone access (macOS: System Settings > Privacy & Security > Microphone).
+- `python -m live devices` lists the input devices.
+
 To finish a session that stopped before its end (a second Ctrl+C, a crash, a closed terminal):
 
 ```sh
@@ -285,10 +298,11 @@ To finish a session that stopped before its end (a second Ctrl+C, a crash, a clo
 ```
 out/live/YYYYMMDD-HHMMSS-<label>/
   YYYYMMDD-HHMMSS-<label>.txt    transcript, same format as Method 1
-  YYYYMMDD-HHMMSS-<label>.flac   full recording, lossless
+  YYYYMMDD-HHMMSS-<label>.flac   full recording, lossless (with --mic: app audio and microphone mixed)
+  YYYYMMDD-HHMMSS-<label>.system.flac, .mic.flac   with --mic only: each source alone
 ```
 
-- During the recording the folder also has `system/` (one raw `.pcm` file per recorder run, about 1.4 GB per hour), `transcript.partial.jsonl` and pid files. `finalize` removes them only after the merged `.flac` is checked.
+- During the recording the folder also has `system/` and `mic/` (one raw `.pcm` file per recorder run, about 1.4 GB per hour for 48 kHz stereo), `transcript.<stream>.partial.jsonl` and pid files. `finalize` removes them only after the `.flac` files are checked.
 - The live transcript is a draft. For a better transcript, run `python -m app` (Method 1) on the `.flac` with a larger `--model`.
 
 ## Moving parts
@@ -296,7 +310,7 @@ out/live/YYYYMMDD-HHMMSS-<label>/
 - `app/cli.py`: command line for one input. Calls `pipeline.run`.
 - `app/batch.py`: command line for a folder. Calls `pipeline.run` once per file.
 - `app/web/`: local web page. `backend/` runs `python -m app` per URL. `frontend/` is static HTML, CSS, JS.
-- `live/`: live transcription. A recorder process appends the audio to a raw `.pcm` file, a transcriber process polls the folder and writes the transcript, and `finalize` merges the audio into one `.flac`. Uses `app.models` and `app.stages.common` (Whisper model, transcript writer).
+- `live/`: live transcription. One recorder process per source (app audio, and the microphone with `--mic`) appends the audio to a raw `.pcm` file, a transcriber process polls the folder and writes the transcript of all sources, and `finalize` merges the audio into one `.flac`. Uses `app.models` and `app.stages.common` (Whisper model, transcript writer).
 - `bin/transcribe-web`, `bin/transcribe-batch`: executable wrappers for `app.web` and `app.batch`.
 - `app/pipeline.py`: picks a source for the input, then writes `<outdir>/YYYYMMDD-Author-Title.txt`.
 - `app/sources/`: one module per input type. Each one decides which stages to run.

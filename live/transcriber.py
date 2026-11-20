@@ -1,4 +1,4 @@
-"""Transcriber process: new audio in the run files of the session folder -> transcript lines.
+"""Transcriber process: new audio in the run files of all streams of the session -> transcript lines.
 
 python -m live.transcriber <session folder> [--backend faster-whisper] [--model base]
 Polls the session folder. Exits when the session is stopped and all audio is done, or when
@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from app.models import Line, timestamp
 from app.stages.common.write import write_full
@@ -19,7 +19,7 @@ from live.console import Caption
 from live.audio import read_16k
 from live.backends import Backend, Segment, Word
 from live.progress import Progress
-from live.session import SOURCE_ID, AlreadyRunning, Session, Timeline, claim, release
+from live.session import SOURCE_ID, AlreadyRunning, Session, Stream, Timeline, claim, release
 
 POLL_SECONDS = 0.2
 MIN_PASS_SECONDS = 1.0  # less pending audio than this waits
@@ -34,6 +34,7 @@ OVERLAP_WORDS = 5  # longest run of agreed words that a pass can repeat at its s
 SENTENCE_END = (".", "?", "!")
 CLAUSE_END = (",", ";", ":")
 PROMPT_LINES = 5
+GAP_MATCH_SECONDS = 2.0  # a gap of another stream this close to a reference gap is the same stop
 
 
 def key(word: Word) -> str:
@@ -184,10 +185,112 @@ def run_start(timeline: Timeline, at: float) -> float:
     return max((g.at for g in timeline.gaps() if g.at <= at), default=0.0)
 
 
-def transcript_lines(progress: Progress, timeline: Timeline) -> List[Line]:
-    """Progress lines plus one '(recording gap HH:MM:SS)' line per gap, in time order."""
-    gaps = [Line(g.at, f"(recording gap {timestamp(g.seconds)})") for g in timeline.gaps()]
-    return sorted(progress.lines() + gaps, key=lambda line: line.start)
+class StreamState:
+    """The transcription state of one stream: its progress file, agreement and the timeline of its last listing."""
+
+    def __init__(self, stream: Stream, backend: Backend):
+        self.stream = stream
+        self.progress = Progress(stream.partial, header(stream.session, backend))
+        if self.progress.header != header(stream.session, backend):
+            console.say(
+                f"note: earlier {stream.name} lines were made with {self.progress.header}; "
+                f"new lines use {header(stream.session, backend)}"
+            )
+        self.agreement = Agreement()
+        self.timeline = stream.timeline()
+        self.last_total: Optional[float] = None
+        self.caption: Optional[Caption] = None
+
+    def list(self) -> Timeline:
+        self.timeline = self.stream.timeline()
+        return self.timeline
+
+    def pending(self) -> float:
+        return self.timeline.total - self.progress.end
+
+    def due(self, stopped: bool) -> bool:
+        """True if a pass must run now on the current timeline.
+
+        Stopped: while MIN_FINAL_SECONDS or more is left. Live: when MIN_PASS_SECONDS or more is
+        pending and the timeline grew STEP_SECONDS since the last pass, or more than
+        MAX_PASS_SECONDS is pending.
+        """
+        pending = self.pending()
+        if stopped:
+            return pending >= MIN_FINAL_SECONDS
+        grown = self.last_total is None or self.timeline.total - self.last_total >= STEP_SECONDS
+        return pending >= MIN_PASS_SECONDS and (grown or pending > MAX_PASS_SECONDS)
+
+    def step(self, backend: Backend, stopped: bool) -> List[dict]:
+        """Run one pass, append the records to the progress file, and return them."""
+        timeline = self.timeline
+        self.last_total = timeline.total
+        span_start = self.progress.end
+        span_end, final, capped = plan_span(timeline, span_start, stopped)
+        prompt = self.progress.prompt(PROMPT_LINES, since=run_start(timeline, span_start))
+        segments = backend.transcribe(read_16k(timeline, span_start, span_end), prompt)
+        records, self.caption = self.agreement.step(segments, span_start, span_end, final=final, capped=capped)
+        if records:
+            self.progress.append(records)
+        return records
+
+
+class Layout:
+    """Places the lines of all streams on one time axis: the timeline of the reference stream.
+
+    The reference is the first stream (in STREAMS order) with audio. A time of another stream
+    goes to its wall time, then to the reference time at that wall time. With more than one
+    stream, each line starts with the stream label.
+    """
+
+    def __init__(self, states: List[StreamState]):
+        self.states = states
+        self.reference = next((s for s in states if s.timeline.files), None)
+        self.labelled = len(states) > 1
+
+    def time(self, state: StreamState, at: float) -> float:
+        if state is self.reference or self.reference is None or not state.timeline.files:
+            return at
+        return self.reference.timeline.time_at(state.timeline.wall_at(at))
+
+    def text(self, state: StreamState, text: str) -> str:
+        return f"{state.stream.label}: {text}" if self.labelled else text
+
+    def line(self, state: StreamState, record: dict) -> Line:
+        return Line(self.time(state, record["start"]), self.text(state, record["text"]))
+
+    def gap_lines(self) -> List[Line]:
+        """One '(recording gap HH:MM:SS)' line per gap of the reference stream.
+
+        A gap of another stream gets its own line with its label, unless a reference gap is
+        within GAP_MATCH_SECONDS of it (both recorders stopped).
+        """
+        if self.reference is None:
+            return []
+        own = [Line(g.at, f"(recording gap {timestamp(g.seconds)})") for g in self.reference.timeline.gaps()]
+        result = list(own)
+        for state in self.states:
+            if state is self.reference:
+                continue
+            for gap in state.timeline.gaps():
+                at = self.time(state, gap.at)
+                if all(abs(at - line.start) > GAP_MATCH_SECONDS for line in own):
+                    result.append(Line(at, f"({state.stream.label}: recording gap {timestamp(gap.seconds)})"))
+        return result
+
+    def lines(self) -> List[Line]:
+        """All text lines of all streams and the gap lines, in time order."""
+        text = [self.line(s, r) for s in self.states for r in s.progress.records if r["text"]]
+        return sorted(text + self.gap_lines(), key=lambda line: line.start)
+
+    def caption(self) -> Optional[Caption]:
+        """The caption of the stream whose held words start last, on the reference time axis, with its label."""
+        shown = [
+            Caption(self.time(s, s.caption.start), s.caption.agreed, s.caption.tail, s.stream.label if self.labelled else "")
+            for s in self.states
+            if s.caption is not None
+        ]
+        return max(shown, key=lambda c: c.start, default=None)
 
 
 def header(session: Session, backend: Backend) -> dict:
@@ -200,62 +303,63 @@ def run(
     should_exit: Callable[[], bool] = lambda: False,
     poll: float = POLL_SECONDS,
 ) -> bool:
-    """Transcribe the session until it is stopped and all audio is done. Return True then.
+    """Transcribe all streams of the session until it is stopped and all audio is done. Return True then.
 
-    Return False if should_exit() becomes True first. The progress file is kept, so a next
-    run continues from it.
+    Each loop gives one pass to each stream that is due. Return False if should_exit() becomes
+    True first. The progress files are kept, so a next run continues from them.
     """
-    progress = Progress(session.partial, header(session, backend))
-    if progress.header != header(session, backend):
-        console.say(f"note: earlier lines were made with {progress.header}; new lines use {header(session, backend)}")
-    last_total: Optional[float] = None
-    gaps_shown = len(session.timeline().gaps())
+    states: Dict[str, StreamState] = {}
+    shown_gaps: Set[Tuple[float, str]] = set()
     draft = console.Draft()
-    agreement = Agreement()
     try:
         while True:
             stopped = session.is_stopped()
-            timeline = session.timeline()
-            pending = timeline.total - progress.end
-            if stopped and pending < MIN_FINAL_SECONDS:
+            for stream in session.streams():
+                if stream.name not in states:
+                    states[stream.name] = StreamState(stream, backend)
+                    shown_gaps |= {(g.start, g.text) for g in Layout(list(states.values())).gap_lines()}
+            for state in states.values():
+                state.list()
+            if stopped and not any(state.due(stopped) for state in states.values()):
                 break
             if should_exit():
                 return False
-            grown = last_total is None or timeline.total - last_total >= STEP_SECONDS
-            fresh = grown or pending > MAX_PASS_SECONDS
-            if not stopped and (not fresh or pending < MIN_PASS_SECONDS):
+            ran = False
+            for state in states.values():
+                if not state.due(stopped):
+                    continue
+                records = state.step(backend, stopped)
+                ran = True
+                layout = Layout(list(states.values()))
+                if records:
+                    write_full(layout.lines(), session.name, SOURCE_ID, session.folder)
+                    shown_gaps = show_new(layout, state, records, shown_gaps)
+                draft.show(layout.caption())
+            if not ran:
                 time.sleep(poll)
-                continue
-            last_total = timeline.total
-            span_start = progress.end
-            span_end, final, capped = plan_span(timeline, span_start, stopped)
-            prompt = progress.prompt(PROMPT_LINES, since=run_start(timeline, span_start))
-            segments = backend.transcribe(read_16k(timeline, span_start, span_end), prompt)
-            records, held = agreement.step(segments, span_start, span_end, final=final, capped=capped)
-            if records:
-                progress.append(records)
-                write_full(transcript_lines(progress, timeline), session.name, SOURCE_ID, session.folder)
-                gaps_shown = show_new(records, timeline, gaps_shown)
-            draft.show(held)
-        write_full(transcript_lines(progress, session.timeline()), session.name, SOURCE_ID, session.folder)
+        if states:
+            write_full(Layout(list(states.values())).lines(), session.name, SOURCE_ID, session.folder)
         return True
     finally:
         draft.clear()
-        progress.close()
+        for state in states.values():
+            state.progress.close()
 
 
-def show_new(records: List[dict], timeline: Timeline, gaps_shown: int) -> int:
-    """Print new gap lines and the committed text lines. Return the number of gaps shown.
+def show_new(layout: Layout, state: StreamState, records: List[dict], shown_gaps: Set[Tuple[float, str]]):
+    """Print the gap lines not shown before and the committed text lines of `state`. Return the shown gaps.
 
     Each line replaces the draft line, if one is on the screen.
     """
-    gaps = timeline.gaps()
-    for gap in gaps[gaps_shown:]:
-        console.say(f"[{timestamp(gap.at)}] (recording gap {timestamp(gap.seconds)})")
+    for gap in layout.gap_lines():
+        if (gap.start, gap.text) not in shown_gaps:
+            console.say(f"[{timestamp(gap.start)}] {gap.text}")
+            shown_gaps = shown_gaps | {(gap.start, gap.text)}
     for record in records:
         if record["text"]:
-            console.say(f"[{timestamp(record['start'])}] {record['text']}")
-    return len(gaps)
+            line = layout.line(state, record)
+            console.say(f"[{timestamp(line.start)}] {line.text}")
+    return shown_gaps
 
 
 def stdin_closed() -> Callable[[], bool]:

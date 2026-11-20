@@ -1,10 +1,12 @@
-"""Recorder process: audio source -> one raw .pcm run file in <session>/system/.
+"""Recorder process: audio source -> one raw .pcm run file in <session>/<stream>/.
 
-python -m live.recorder <session folder> --device NAME
-python -m live.recorder <session folder> --loopback [--device NAME]
-The source is an input device (sounddevice), or with --loopback the WASAPI loopback of a
-Windows playback device (pyaudiowpatch). Appends each audio block to the run file as it
-arrives, so the transcriber can read it at once. Stops when stdin closes (end of file).
+python -m live.recorder <session folder> [--stream system] --device NAME
+python -m live.recorder <session folder> [--stream system] --loopback [--device NAME]
+python -m live.recorder <session folder> --stream mic [--device NAME]
+The source is an input device (sounddevice; for the mic stream the default input device if no
+--device), or with --loopback the WASAPI loopback of a Windows playback device (pyaudiowpatch).
+Appends each audio block to the run file as it arrives, so the transcriber can read it at once.
+Stops when stdin closes (end of file).
 """
 
 import argparse
@@ -21,7 +23,9 @@ from typing import BinaryIO, Optional
 import numpy as np
 
 from live import console
-from live.session import PCM_DTYPE, AlreadyRunning, Session, claim, release, run_name
+from live.session import (
+    MIC, PCM_DTYPE, STREAMS, SYSTEM, AlreadyRunning, Session, Stream, claim, recorder_role, release, run_name,
+)
 
 SILENCE_PEAK = 1e-4
 SILENCE_WARN_SECONDS = 30.0
@@ -44,8 +48,8 @@ class RunWriter:
     set again from each block that arrives, so the drift of the device clock does not add up.
     """
 
-    def __init__(self, session: Session, rate: int, channels: int, fill_gaps: bool = False, silence_hint: str = ""):
-        self.session = session
+    def __init__(self, stream: Stream, rate: int, channels: int, fill_gaps: bool = False, silence_hint: str = ""):
+        self.stream = stream
         self.rate = rate
         self.channels = channels
         self.fill_gaps = fill_gaps
@@ -86,8 +90,8 @@ class RunWriter:
 
     def write(self, block: np.ndarray, start: float) -> None:
         if self.file is None:
-            self.path = self.session.audio_dir / run_name(
-                self.session.next_seq(), datetime.fromtimestamp(start), self.rate, self.channels
+            self.path = self.stream.audio_dir / run_name(
+                self.stream.next_seq(), datetime.fromtimestamp(start), self.rate, self.channels
             )
             self.file = open(self.path, "wb")
         self.check_signal(block)
@@ -102,20 +106,25 @@ class RunWriter:
     def check_signal(self, block: np.ndarray) -> None:
         if len(block) and float(np.abs(block).max()) > SILENCE_PEAK:
             if self.warned_silence:
-                log("signal back")
+                log(f"{self.stream.name}: signal back")
             self.silent_frames = 0
             self.warned_silence = False
             return
         self.silent_frames += len(block)
         if not self.warned_silence and self.silent_frames >= SILENCE_WARN_SECONDS * self.rate:
-            log(f"no signal for {SILENCE_WARN_SECONDS:.0f} s. {self.silence_hint}".rstrip())
+            log(f"{self.stream.name}: no signal for {SILENCE_WARN_SECONDS:.0f} s. {self.silence_hint}".rstrip())
             self.warned_silence = True
 
 
-def find_input_device(name: str) -> dict:
-    """The first input device whose name contains `name` (case is ignored)."""
+def find_input_device(name: Optional[str]) -> dict:
+    """The first input device whose name contains `name` (case is ignored), or the default input device if None."""
     import sounddevice
 
+    if name is None:
+        try:
+            return sounddevice.query_devices(kind="input")
+        except sounddevice.PortAudioError as error:
+            raise SystemExit(f"no default input device: {error}")
     devices = [d for d in sounddevice.query_devices() if d["max_input_channels"] > 0]
     for device in devices:
         if name.lower() in device["name"].lower():
@@ -133,7 +142,7 @@ def wait_for_stdin_close(stop: threading.Event) -> None:
 
 
 @contextmanager
-def input_stream(device_name: str, blocks: "queue.Queue"):
+def input_stream(device_name: Optional[str], blocks: "queue.Queue", hint: str):
     """Record from an input device (sounddevice). Yields (name, rate, channels, silence hint)."""
     import sounddevice
 
@@ -149,9 +158,7 @@ def input_stream(device_name: str, blocks: "queue.Queue"):
     with sounddevice.InputStream(
         device=device["index"], channels=channels, samplerate=rate, dtype="float32", callback=callback
     ):
-        yield device["name"], rate, channels, (
-            "Check that the app plays to the Multi-Output Device and that the terminal has microphone access"
-        )
+        yield device["name"], rate, channels, hint
 
 
 def loopback_devices(audio) -> list:
@@ -207,20 +214,29 @@ def loopback_stream(device_name: Optional[str], blocks: "queue.Queue"):
         audio.terminate()
 
 
-def record(session: Session, device_name: Optional[str], loopback: bool, stop: threading.Event) -> None:
+SILENCE_HINTS = {
+    SYSTEM: "Check that the app plays to the Multi-Output Device and that the terminal has microphone access",
+    MIC: "Check that the microphone is not muted and that the terminal has microphone access",
+}
+
+
+def record(stream: Stream, device_name: Optional[str], loopback: bool, stop: threading.Event) -> None:
     """Record from the source until `stop` is set, then write the blocks that are left."""
     blocks: "queue.Queue" = queue.Queue()
-    stream = loopback_stream(device_name, blocks) if loopback else input_stream(device_name, blocks)
-    with stream as (name, rate, channels, hint):
-        writer = RunWriter(session, rate, channels, fill_gaps=loopback, silence_hint=hint)
+    if loopback:
+        source = loopback_stream(device_name, blocks)
+    else:
+        source = input_stream(device_name, blocks, SILENCE_HINTS[stream.name])
+    with source as (name, rate, channels, hint):
+        writer = RunWriter(stream, rate, channels, fill_gaps=loopback, silence_hint=hint)
         writer.begin(time.time())
-        log(f"recording {name} ({rate} Hz, {channels} ch) to {session.audio_dir}")
+        log(f"recording {name} ({rate} Hz, {channels} ch) to {stream.audio_dir}")
         while not stop.is_set():
             drain(blocks, writer, timeout=0.2)
             writer.idle(time.time())
     drain(blocks, writer, timeout=0)
     writer.close()
-    log(f"stopped. {writer.frames / rate:.1f} s saved in this run")
+    log(f"{stream.name}: stopped. {writer.frames / rate:.1f} s saved in this run")
 
 
 def drain(blocks: "queue.Queue", writer: RunWriter, timeout: float) -> None:
@@ -244,25 +260,27 @@ def drain(blocks: "queue.Queue", writer: RunWriter, timeout: float) -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m live.recorder")
     parser.add_argument("session", type=Path)
+    parser.add_argument("--stream", default=SYSTEM, choices=STREAMS)
     parser.add_argument("--device", help="input device name, or with --loopback a playback device name (part of it)")
     parser.add_argument("--loopback", action="store_true", help="record a Windows playback device (WASAPI loopback)")
     args = parser.parse_args(argv)
-    if not args.loopback and args.device is None:
-        parser.error("--device is needed without --loopback")
+    if args.stream == SYSTEM and not args.loopback and args.device is None:
+        parser.error("--device is needed for the system stream without --loopback")
 
     session = Session(args.session)
-    session.audio_dir.mkdir(parents=True, exist_ok=True)
+    stream = session.stream(args.stream)
+    stream.audio_dir.mkdir(parents=True, exist_ok=True)
     try:
-        claim(session, "recorder")
+        claim(session, recorder_role(stream.name))
     except AlreadyRunning as error:
         log(str(error))
         return 1
     stop = threading.Event()
     threading.Thread(target=wait_for_stdin_close, args=(stop,), daemon=True).start()
     try:
-        record(session, args.device, args.loopback, stop)
+        record(stream, args.device, args.loopback, stop)
     finally:
-        release(session, "recorder")
+        release(session, recorder_role(stream.name))
     return 0
 
 

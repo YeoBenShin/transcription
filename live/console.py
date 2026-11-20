@@ -42,11 +42,12 @@ class Caption:
     start: float  # timeline time of the first word
     agreed: str  # words that do not change
     tail: str  # words after them that can change
+    label: str = ""  # stream label, shown before the words
 
 
 def styled(caption: Caption, width: int) -> str:
     """The draft line text with ANSI styles, cut to the terminal width by fit."""
-    prefix = f"[{timestamp(caption.start)}] "
+    prefix = f"[{timestamp(caption.start)}] " + (f"{caption.label}: " if caption.label else "")
     full = " ".join(t for t in (caption.agreed, caption.tail) if t)
     shown = fit(prefix, full, width)[len(prefix):]
     cut = max(len(shown) - len(caption.tail), 0)

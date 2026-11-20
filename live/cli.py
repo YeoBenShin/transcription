@@ -10,12 +10,16 @@ from pathlib import Path
 from live import backends, console
 from live.audio import MergeFailed
 from live.finalize import finalize
-from live.session import AlreadyRunning, Session, running_pid
+from live.session import MIC, STREAMS, SYSTEM, AlreadyRunning, Session, recorder_role, running_pid
 
 POLL_SECONDS = 0.5
 TRANSCRIBER_RESTARTS = 3
 TRANSCRIBER_EXIT_WAIT = 30.0
 DEFAULT_DEVICE = "BlackHole"
+MIC_WARNING = (
+    "--mic records the microphone as it is. Use headphones: with speakers, the microphone also hears "
+    "the others, and their lines show twice. Mute in the meeting app does not stop this recording"
+)
 
 
 def log(message: str) -> None:
@@ -48,19 +52,24 @@ def open_session(args) -> Session:
     session = Session(args.session)
     if session.merged.exists():
         raise SystemExit(f"{session.folder} is finalized already. Start a new session.")
-    pid = running_pid(session, "recorder")
-    if pid is not None:
-        raise SystemExit(f"a recorder (pid {pid}) already runs for {session.folder}")
-    session.audio_dir.mkdir(parents=True, exist_ok=True)
+    for stream in STREAMS:
+        pid = running_pid(session, recorder_role(stream))
+        if pid is not None:
+            raise SystemExit(f"a {stream} recorder (pid {pid}) already runs for {session.folder}")
     session.clear_stopped()
     return session
 
 
-def recorder_source(args) -> list:
-    """Recorder arguments for the audio source: an input device, or a loopback of a playback device."""
+def recorder_sources(args) -> dict:
+    """Recorder arguments per stream. system: an input device, or a loopback of a playback device.
+    mic (with --mic): the named input device, or the default input device."""
     if args.loopback:
-        return ["--loopback"] + (["--device", args.device] if args.device else [])
-    return ["--device", args.device or DEFAULT_DEVICE]
+        sources = {SYSTEM: ["--loopback"] + (["--device", args.device] if args.device else [])}
+    else:
+        sources = {SYSTEM: ["--device", args.device or DEFAULT_DEVICE]}
+    if args.mic is not None:
+        sources[MIC] = ["--device", args.mic] if args.mic else []
+    return sources
 
 
 def stop_on_signal(signum, frame):
@@ -72,27 +81,39 @@ def start(args) -> int:
     signal.signal(signal.SIGTERM, stop_on_signal)
     session = open_session(args)
     folder = str(session.folder)
-    recorder = spawn("live.recorder", [folder, *recorder_source(args)])
+    sources = recorder_sources(args)
+    if MIC in sources:
+        log(MIC_WARNING)
+    recorders = {
+        stream: spawn("live.recorder", [folder, "--stream", stream, *source]) for stream, source in sources.items()
+    }
     transcriber_args = [folder, "--backend", args.backend, "--model", args.model]
     transcriber = spawn("live.transcriber", transcriber_args)
     restarts = 0
     log(f"session {folder}. Ctrl+C stops the recording")
 
+    running = dict(recorders)
     try:
-        while recorder.poll() is None:
+        while running:
             code = transcriber.poll()
             if code not in (None, 0) and restarts < TRANSCRIBER_RESTARTS:
                 restarts += 1
                 log(f"transcriber stopped (exit {code}); restart {restarts}/{TRANSCRIBER_RESTARTS}")
                 transcriber = spawn("live.transcriber", transcriber_args)
+            for stream, recorder in list(running.items()):
+                if recorder.poll() is not None:
+                    log(f"{stream} recorder stopped by itself (exit {recorder.returncode})")
+                    del running[stream]
             time.sleep(POLL_SECONDS)
-        log(f"recorder stopped by itself (exit {recorder.returncode})")
     except KeyboardInterrupt:
         log("stopping the recording")
-        recorder.stdin.close()
-        wait_through_ctrl_c(recorder, "saving the last audio blocks")
+        for recorder in recorders.values():
+            if recorder.poll() is None:
+                recorder.stdin.close()
+        for recorder in recorders.values():
+            wait_through_ctrl_c(recorder, "saving the last audio blocks")
     session.mark_stopped()
-    if not session.timeline().files:
+    if not session.has_audio():
         transcriber.stdin.close()
         transcriber.wait()
         log("no audio was recorded")
@@ -172,6 +193,14 @@ def main(argv=None) -> int:
     )
     begin.add_argument(
         "--loopback", action="store_true", help="Windows: record what a playback device plays (WASAPI loopback)"
+    )
+    begin.add_argument(
+        "--mic",
+        nargs="?",
+        const="",
+        metavar="NAME",
+        help="also record and transcribe a microphone: the input device whose name contains NAME, or the "
+        "default input device. Lines get the label 'Me:' (microphone) or 'Them:' (system audio)",
     )
     begin.add_argument("--label", default="", help="text added to the session folder name")
     begin.add_argument("--outdir", type=Path, default=Path("out"))

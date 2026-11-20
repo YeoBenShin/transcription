@@ -1,4 +1,4 @@
-"""The transcript progress file: <session>/transcript.partial.jsonl.
+"""The transcript progress file of one stream: <session>/transcript.<stream>.partial.jsonl.
 
 Line 1 is {"header": {session, backend, model}}. Each next line is {start, end, text} in
 timeline time. A line with text "" marks audio up to `end` as done with no speech.
