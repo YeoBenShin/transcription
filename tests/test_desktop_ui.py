@@ -139,3 +139,28 @@ def test_onboarding_continue_needs_installed_selected_model(qtbot, tmp_path, mon
     (models / "whisper-tiny").mkdir()  # as a finished download leaves it
     dialog.on_downloaded("whisper-tiny")
     assert dialog.continue_button.isEnabled() and settings.model_id == "whisper-tiny"
+
+
+def test_deleting_the_selected_model_clears_the_selection(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    models = tmp_path / "models"
+    (models / "whisper-tiny").mkdir(parents=True)
+    settings = Settings(model_id="whisper-tiny")
+    dialog = OnboardingDialog(settings, DownloadManager(models))
+    qtbot.addWidget(dialog)
+    assert dialog.continue_button.isEnabled()
+    row = next(r for r in dialog.models.rows if r.model.id == "whisper-tiny")
+    row.delete()
+    assert not (models / "whisper-tiny").exists()
+    assert settings.model_id == "" and not dialog.continue_button.isEnabled()
+
+
+def test_device_row_shows_only_for_a_device_source(qtbot):
+    from desktop.ui.dialogs import RecordingSettings
+
+    widget = RecordingSettings(Settings(system_source="none"))
+    qtbot.addWidget(widget)
+    widget.show()
+    assert not widget.device.isVisible()
+    widget.source.setCurrentIndex(widget.source.findData("device"))
+    assert widget.device.isVisible()

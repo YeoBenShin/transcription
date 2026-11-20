@@ -82,6 +82,7 @@ class RecordingSettings(QWidget):
         self.device.currentTextChanged.connect(self.on_device)
         form.addRow("Device", self.device)
         layout.addLayout(form)
+        self.form = form
 
         self.permission_row = QWidget()
         row = QHBoxLayout(self.permission_row)
@@ -140,7 +141,7 @@ class RecordingSettings(QWidget):
             elif source == "device":
                 self.device.setEditText(self.settings.system_device or "BlackHole")
         self.device.blockSignals(False)
-        self.device.setEnabled(source in ("device", "loopback"))
+        self.form.setRowVisible(self.device, source in ("device", "loopback"))
         self.on_device(self.device.currentText())
         self.permission_row.setVisible(source == "tap")
 

@@ -74,6 +74,7 @@ class ModelRow(QFrame):
     """One model: name, note, size, and Download / Cancel / Select / Selected with Delete."""
 
     select_requested = Signal(str)
+    deleted = Signal(str)
 
     def __init__(self, model: ModelSpec, manager: DownloadManager, parent=None):
         super().__init__(parent)
@@ -160,6 +161,7 @@ class ModelRow(QFrame):
         if answer == QMessageBox.Yes:
             catalog.delete(self.model, self.manager.models_dir)
             self.refresh()
+            self.deleted.emit(self.model.id)
 
 
 class ModelList(QWidget):
@@ -176,6 +178,7 @@ class ModelList(QWidget):
         for model in catalog.available():
             row = ModelRow(model, manager)
             row.select_requested.connect(self.select)
+            row.deleted.connect(self.on_deleted)
             layout.addWidget(row)
             self.rows.append(row)
         layout.addStretch()
@@ -186,6 +189,11 @@ class ModelList(QWidget):
             row.set_selected(row.model.id == model_id and row.installed())
         if emit:
             self.model_selected.emit(model_id)
+
+    def on_deleted(self, model_id: str) -> None:
+        """A deleted model cannot stay selected."""
+        if any(row.model.id == model_id and row.selected for row in self.rows):
+            self.select("")
 
     def selected_installed(self) -> bool:
         return any(row.selected for row in self.rows)
