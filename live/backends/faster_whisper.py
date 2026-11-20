@@ -10,6 +10,9 @@ from live.backends.base import SAMPLE_RATE, Segment, Word
 
 TOKENS_PER_SECOND = 10  # most tokens one second of audio can give
 TOKEN_MARGIN = 20
+MAX_LENGTH = 448  # most tokens Whisper takes in one window: prompt plus output
+MAX_PROMPT = 227  # longest prompt faster-whisper makes: 223 text tokens plus 4 control tokens
+MAX_NEW_TOKENS = MAX_LENGTH - MAX_PROMPT
 
 
 class FasterWhisper:
@@ -26,7 +29,7 @@ class FasterWhisper:
             initial_prompt=prompt,
             word_timestamps=True,
             temperature=0.0,
-            max_new_tokens=int(len(audio) / SAMPLE_RATE * TOKENS_PER_SECOND) + TOKEN_MARGIN,
+            max_new_tokens=min(int(len(audio) / SAMPLE_RATE * TOKENS_PER_SECOND) + TOKEN_MARGIN, MAX_NEW_TOKENS),
         )
         return [
             Segment(s.start, s.end, clean(s.text), [Word(w.start, w.end, clean(w.word)) for w in s.words or []])
