@@ -12,13 +12,15 @@ import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
+import numpy as np
+
 from app.models import Line, timestamp
 from app.stages.common.write import write_full
-from live import backends, console
+from live import backends, console, loops, vad
 from live.console import Caption
 from live.audio import read_16k
 from live.backends import Backend, Segment, Word
-from live.progress import Progress
+from live.progress import Progress, TextLine
 from live.session import SOURCE_ID, AlreadyRunning, Session, Stream, Timeline, claim, release
 
 POLL_SECONDS = 0.2
@@ -26,30 +28,29 @@ MIN_PASS_SECONDS = 1.0  # less pending audio than this waits
 STEP_SECONDS = 1.0  # a live pass runs when the timeline grew this much since the last pass
 MAX_PASS_SECONDS = 30.0  # longest span given to the backend in one pass
 MIN_FINAL_SECONDS = 0.3  # a stopped session with less audio left than this is done
-TAIL_GUARD_SECONDS = 1.5  # speech that ends this far before the span end is complete
 SILENCE_KEEP_SECONDS = 2.0  # with no speech, this much of the span end is done again next pass
-LINE_MAX_SECONDS = 8.0  # agreed words this long with no sentence end are written up to a clause end
 OVERLAP_SECONDS = 0.1  # a word that starts this close before the last agreed word end is a new word
 OVERLAP_WORDS = 5  # longest run of agreed words that a pass can repeat at its start
 SENTENCE_END = (".", "?", "!")
-CLAUSE_END = (",", ";", ":")
-PROMPT_LINES = 5
+SENTENCE_GUARD_SECONDS = 1.5  # a sentence end with this much audio after it closes the line
 GAP_MATCH_SECONDS = 2.0  # a gap of another stream this close to a reference gap is the same stop
 
 
 def key(word: Word) -> str:
     """Word text in lower case, letters and digits only. Two passes agree on a word if keys are equal."""
-    return "".join(c for c in word.text.lower() if c.isalnum())
+    return loops.key(word.text)
 
 
 def place(segments: List[Segment], span_start: float, span_end: float) -> List[Word]:
-    """The words of all segments in timeline time, the end cut at span_end. Words with no text are left out."""
-    return [
-        Word(span_start + w.start, min(span_start + w.end, span_end), w.text)
-        for s in segments
-        for w in s.words
-        if w.text
-    ]
+    """The words of all segments in timeline time, the end cut at span_end. Words with no text are
+    left out. A segment with a loop is cut where the loop repeats (loops.loop_cut).
+    """
+    words = []
+    for segment in segments:
+        items = [w for w in segment.words if w.text]
+        cut = loops.loop_cut([w.text for w in items])
+        words += [Word(span_start + w.start, min(span_start + w.end, span_end), w.text) for w in items[:cut]]
+    return words
 
 
 def common_prefix(a: List[Word], b: List[Word]) -> int:
@@ -62,37 +63,74 @@ def common_prefix(a: List[Word], b: List[Word]) -> int:
     return count
 
 
-def last_end(words: List[Word], marks: Tuple[str, ...]) -> int:
-    """Number of words up to and including the last word that ends with one of `marks`, or 0."""
-    return max((i + 1 for i, w in enumerate(words) if w.text.endswith(marks)), default=0)
+def is_sentence_end(word: Word) -> bool:
+    return word.text.endswith(SENTENCE_END)
 
 
-def to_lines(words: List[Word]) -> List[dict]:
-    """Progress records, one per sentence. A line ends at a word that ends with SENTENCE_END, or at the last word."""
-    records, line = [], []
-    for word in words:
-        line.append(word)
-        if word.text.endswith(SENTENCE_END) or word is words[-1]:
-            records.append({"start": line[0].start, "end": line[-1].end, "text": " ".join(w.text for w in line)})
-            line = []
+def line_ends(line: List[Word], i: int, heard_to: float) -> bool:
+    """True if the line closes after line[i]: it ends with SENTENCE_END, and a word comes after it
+    or it ends SENTENCE_GUARD_SECONDS or more before `heard_to`.
+    """
+    return is_sentence_end(line[i]) and (i < len(line) - 1 or line[i].end <= heard_to - SENTENCE_GUARD_SECONDS)
+
+
+def pieces(line: List[Word], written: int, close: bool, heard_to: float) -> List[dict]:
+    """Progress records for line[written:], the words written to the open line line[:written].
+
+    The line closes where line_ends is True, and after the last word if `close`. A record whose
+    line does not close has "open": true. If the line closes right after line[written - 1], a
+    record with text "" closes it.
+    """
+    records, piece = [], []
+    if written and line_ends(line, written - 1, heard_to) or close and line and written == len(line):
+        end = line[written - 1].end
+        records.append({"start": end, "end": end, "text": ""})
+    for i in range(written, len(line)):
+        piece.append(line[i])
+        last = i == len(line) - 1
+        closes = (close and last) or line_ends(line, i, heard_to)
+        if closes or last:
+            record = {"start": piece[0].start, "end": piece[-1].end, "text": " ".join(w.text for w in piece)}
+            if not closes:
+                record["open"] = True
+            records.append(record)
+            piece = []
     return records
 
 
-class Agreement:
-    """The words after the last written line, kept in memory between passes.
+def open_line(line: List[Word], heard_to: float) -> List[Word]:
+    """The words after the last place where the line closes (line_ends)."""
+    return line[max((i + 1 for i in range(len(line)) if line_ends(line, i, heard_to)), default=0):]
 
-    agreed: words that two passes in a row gave, in the same order. They do not change.
+
+def open_words(records: List[dict]) -> List[Word]:
+    """Words of the open records, with times spread evenly over each record."""
+    words = []
+    for record in records:
+        texts = record["text"].split()
+        step = (record["end"] - record["start"]) / max(len(texts), 1)
+        words += [
+            Word(record["start"] + i * step, record["start"] + (i + 1) * step, text) for i, text in enumerate(texts)
+        ]
+    return words
+
+
+class Agreement:
+    """The words after the last closed line, kept in memory between passes.
+
+    agreed: words that two passes in a row gave, in the same order. They are written at once
+      into the open line, and do not change.
     tail: the words after them from the last pass. The next pass can change them.
     """
 
-    def __init__(self):
-        self.agreed: List[Word] = []
+    def __init__(self, agreed: Optional[List[Word]] = None):
+        self.agreed: List[Word] = list(agreed or [])
         self.tail: List[Word] = []
 
     def new_words(self, words: List[Word]) -> List[Word]:
         """The words of a pass that come after the agreed words.
 
-        A pass starts at the last written line, so it gives the agreed words again. Words that
+        A pass starts at the last closed line, so it gives the agreed words again. Words that
         start before the last agreed word end are removed, then up to OVERLAP_WORDS words that
         repeat the end of the agreed words.
         """
@@ -106,55 +144,54 @@ class Agreement:
         return words
 
     def step(
-        self, segments: List[Segment], span_start: float, span_end: float, final: bool, capped: bool
+        self,
+        segments: List[Segment],
+        span_start: float,
+        span_end: float,
+        final: bool,
+        capped: bool,
+        speech_end: Optional[float],
     ) -> Tuple[List[dict], Optional[Caption]]:
         """Return (progress records to write, caption to show) from one pass over [span_start, span_end).
 
-        The words of this pass that agree with the tail of the last pass become agreed. Then write:
-        - final: all words, and mark the audio done up to span_end.
-        - speech ends TAIL_GUARD_SECONDS or more before span_end: all words.
-        - capped (span cut at MAX_PASS_SECONDS): all words except the last.
-        - else: the agreed words up to the last sentence end. If there is none and the agreed
-          words are LINE_MAX_SECONDS or longer, the agreed words up to the last clause end, or
-          all agreed words if there is none.
+        `speech_end` is the timeline time where the VAD found the end of speech (span_end if speech
+        goes on, None if there is no speech). The words of this pass that agree with the tail of the
+        last pass become agreed. Then write into the open line:
+        - final: all words; close the line and mark the audio done up to span_end.
+        - speech ends before span_end, or no speech: all words; close the line.
+        - capped (span cut at MAX_PASS_SECONDS): all words except the last; close the line.
+        - else: the new agreed words. The line closes after a sentence end that has an agreed word
+          after it, or SENTENCE_GUARD_SECONDS of audio after it.
         With no words at all, mark the audio done up to span_end - SILENCE_KEEP_SECONDS.
-        A record with text "" marks audio done with no speech. The caption is the words not written.
+        A record with text "" marks audio done with no speech. The caption is the open line and the tail.
         """
         new = self.new_words(place(segments, span_start, span_end))
         confirmed = 0 if final else common_prefix(self.tail, new)
-        self.agreed += new[:confirmed]
+        fresh = new[:confirmed]
         self.tail = new[confirmed:]
-        heard = self.agreed + self.tail
+        heard = self.agreed + fresh + self.tail
+        close = True
         if final:
-            write, end = heard, span_end
+            write, self.tail = fresh + self.tail, []
         elif not heard:
-            write, end = [], span_end - SILENCE_KEEP_SECONDS
+            write = []
+        elif speech_end is None or speech_end < span_end:
+            write, self.tail = fresh + self.tail, []
+        elif capped:
+            write = (fresh + self.tail)[:-1]
+            self.tail = (fresh + self.tail)[-1:]
+            if not write and not self.agreed:
+                write, self.tail = self.tail, []
         else:
-            if heard[-1].end <= span_end - TAIL_GUARD_SECONDS:
-                write = heard
-            elif capped:
-                write = heard[:-1] or heard
-            else:
-                write = self.agreed[: last_end(self.agreed, SENTENCE_END)]
-                if not write and self.agreed and self.agreed[-1].end - self.agreed[0].start >= LINE_MAX_SECONDS:
-                    write = self.agreed[: last_end(self.agreed, CLAUSE_END) or len(self.agreed)]
-            end = write[-1].end if write else span_start
-        records = to_lines(write)
+            write, close = fresh, False
+        line = self.agreed + write
+        records = pieces(line, len(self.agreed), close, span_end)
         done = records[-1]["end"] if records else span_start
+        end = span_end if final else span_end - SILENCE_KEEP_SECONDS if not heard else done
         if end > done:
             records.append({"start": done, "end": end, "text": ""})
-        self.drop(len(write))
-        if final:
-            self.agreed, self.tail = [], []
+        self.agreed = [] if close else open_line(line, span_end)
         return records, self.caption()
-
-    def drop(self, count: int) -> None:
-        """Remove the first `count` words of agreed + tail."""
-        if count >= len(self.agreed):
-            self.tail = self.tail[count - len(self.agreed):]
-            self.agreed = []
-        else:
-            self.agreed = self.agreed[count:]
 
     def caption(self) -> Optional[Caption]:
         words = self.agreed + self.tail
@@ -185,6 +222,19 @@ def run_start(timeline: Timeline, at: float) -> float:
     return max((g.at for g in timeline.gaps() if g.at <= at), default=0.0)
 
 
+def span_speech_end(end: Optional[float], samples: np.ndarray, span_start: float, span_end: float) -> Optional[float]:
+    """Timeline time of a VAD speech end `end` (seconds from the span start). Speech that goes on
+    to the last sample gives span_end. None stays None.
+    """
+    if end is None:
+        return None
+    return span_end if end >= len(samples) / backends.SAMPLE_RATE else span_start + end
+
+
+def header(session: Session, backend: Backend) -> dict:
+    return {"session": session.name, "backend": backend.name, "model": backend.model}
+
+
 class StreamState:
     """The transcription state of one stream: its progress file, agreement and the timeline of its last listing."""
 
@@ -196,7 +246,7 @@ class StreamState:
                 f"note: earlier {stream.name} lines were made with {self.progress.header}; "
                 f"new lines use {header(stream.session, backend)}"
             )
-        self.agreement = Agreement()
+        self.agreement = Agreement(open_words(self.progress.open_records()))
         self.timeline = stream.timeline()
         self.last_total: Optional[float] = None
         self.caption: Optional[Caption] = None
@@ -221,18 +271,29 @@ class StreamState:
         grown = self.last_total is None or self.timeline.total - self.last_total >= STEP_SECONDS
         return pending >= MIN_PASS_SECONDS and (grown or pending > MAX_PASS_SECONDS)
 
-    def step(self, backend: Backend, stopped: bool) -> List[dict]:
-        """Run one pass, append the records to the progress file, and return them."""
+    def step(
+        self, backend: Backend, stopped: bool, speech_end: Callable[[np.ndarray], Optional[float]]
+    ) -> Optional[List[TextLine]]:
+        """Run one pass and append its records to the progress file.
+
+        Return the lines that closed in it, or None if the pass wrote no record.
+        """
         timeline = self.timeline
         self.last_total = timeline.total
         span_start = self.progress.end
         span_end, final, capped = plan_span(timeline, span_start, stopped)
-        prompt = self.progress.prompt(PROMPT_LINES, since=run_start(timeline, span_start))
-        segments = backend.transcribe(read_16k(timeline, span_start, span_end), prompt)
-        records, self.caption = self.agreement.step(segments, span_start, span_end, final=final, capped=capped)
-        if records:
-            self.progress.append(records)
-        return records
+        prompt = self.progress.prompt(since=run_start(timeline, span_start), before=span_start)
+        samples = read_16k(timeline, span_start, span_end)
+        segments = backend.transcribe(samples, prompt)
+        records, self.caption = self.agreement.step(
+            segments, span_start, span_end, final=final, capped=capped,
+            speech_end=span_speech_end(speech_end(samples), samples, span_start, span_end),
+        )
+        if not records:
+            return None
+        closed = self.progress.closed_count()
+        self.progress.append(records)
+        return [line for line in self.progress.text_lines()[closed:] if line.closed]
 
 
 class Layout:
@@ -253,11 +314,8 @@ class Layout:
             return at
         return self.reference.timeline.time_at(state.timeline.wall_at(at))
 
-    def text(self, state: StreamState, text: str) -> str:
-        return f"{state.stream.label}: {text}" if self.labelled else text
-
-    def line(self, state: StreamState, record: dict) -> Line:
-        return Line(self.time(state, record["start"]), self.text(state, record["text"]))
+    def line(self, state: StreamState, start: float, text: str) -> Line:
+        return Line(self.time(state, start), f"{state.stream.label}: {text}" if self.labelled else text)
 
     def gap_lines(self) -> List[Line]:
         """One '(recording gap HH:MM:SS)' line per gap of the reference stream.
@@ -279,8 +337,8 @@ class Layout:
         return result
 
     def lines(self) -> List[Line]:
-        """All text lines of all streams and the gap lines, in time order."""
-        text = [self.line(s, r) for s in self.states for r in s.progress.records if r["text"]]
+        """All text lines of all streams (the last one of a stream can be open) and the gap lines, in time order."""
+        text = [self.line(s, line.start, line.text) for s in self.states for line in s.progress.lines()]
         return sorted(text + self.gap_lines(), key=lambda line: line.start)
 
     def caption(self) -> Optional[Caption]:
@@ -293,21 +351,21 @@ class Layout:
         return max(shown, key=lambda c: c.start, default=None)
 
 
-def header(session: Session, backend: Backend) -> dict:
-    return {"session": session.name, "backend": backend.name, "model": backend.model}
-
-
 def run(
     session: Session,
     backend: Backend,
     should_exit: Callable[[], bool] = lambda: False,
     poll: float = POLL_SECONDS,
+    speech_end: Optional[Callable[[np.ndarray], Optional[float]]] = None,
 ) -> bool:
     """Transcribe all streams of the session until it is stopped and all audio is done. Return True then.
 
     Each loop gives one pass to each stream that is due. Return False if should_exit() becomes
-    True first. The progress files are kept, so a next run continues from them.
+    True first. The progress files are kept, so a next run continues from them, with the words
+    of the open line of each stream as its agreed words.
+    `speech_end` gives where the speech in the span audio ends (default vad.speech_end).
     """
+    speech_end = speech_end or vad.speech_end
     states: Dict[str, StreamState] = {}
     shown_gaps: Set[Tuple[float, str]] = set()
     draft = console.Draft()
@@ -328,12 +386,12 @@ def run(
             for state in states.values():
                 if not state.due(stopped):
                     continue
-                records = state.step(backend, stopped)
+                closed = state.step(backend, stopped, speech_end)
                 ran = True
                 layout = Layout(list(states.values()))
-                if records:
+                if closed is not None:
                     write_full(layout.lines(), session.name, SOURCE_ID, session.folder)
-                    shown_gaps = show_new(layout, state, records, shown_gaps)
+                    shown_gaps = show_new(layout, state, closed, shown_gaps)
                 draft.show(layout.caption())
             if not ran:
                 time.sleep(poll)
@@ -346,19 +404,18 @@ def run(
             state.progress.close()
 
 
-def show_new(layout: Layout, state: StreamState, records: List[dict], shown_gaps: Set[Tuple[float, str]]):
-    """Print the gap lines not shown before and the committed text lines of `state`. Return the shown gaps.
+def show_new(layout: Layout, state: StreamState, closed: List[TextLine], shown_gaps: Set[Tuple[float, str]]):
+    """Print the gap lines not shown before and the lines of `state` that closed. Return the shown gaps.
 
-    Each line replaces the draft line, if one is on the screen.
+    Each line replaces the draft line, if one is on the screen. An open line shows in the draft.
     """
     for gap in layout.gap_lines():
         if (gap.start, gap.text) not in shown_gaps:
             console.say(f"[{timestamp(gap.start)}] {gap.text}")
             shown_gaps = shown_gaps | {(gap.start, gap.text)}
-    for record in records:
-        if record["text"]:
-            line = layout.line(state, record)
-            console.say(f"[{timestamp(line.start)}] {line.text}")
+    for text_line in closed:
+        line = layout.line(state, text_line.start, text_line.text)
+        console.say(f"[{timestamp(line.start)}] {line.text}")
     return shown_gaps
 
 

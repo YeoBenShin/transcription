@@ -72,6 +72,16 @@ Use this instead of `winget configure` when Python 3.13 is already installed, or
 - `tests/test_live.py`: live run file writing, gaps, commit rules, transcriber resume, merge and finalize. Fake backend, no audio device, no Whisper.
 - `tests/test_temp_files.py`: which files in `temp/` belong to one `<name>` (used by the web Delete button).
 
+Live benchmark (default check of live accuracy and speed, about 2 min, not in the default run):
+
+```sh
+.venv/bin/python -m pytest -m bench -s        # pass/fail against limits
+.venv/bin/python -m tests.bench_live          # print the result only; --audio, --reference, --model, --out
+```
+
+- Plays `tests/fixtures/20260801-Amir’s Lab-...flac` (2x speed speech) into a session in real time and runs the live transcriber on it. Prints WER against the `.txt` next to it, write delay (word on disk to word in the transcript), line delay, end lag, pass times.
+- Output: `out/bench/live/<session>/` with the transcript and `passes.jsonl` (one line per pass).
+
 ## Method 1: CLI
 
 ### One input: `python -m app`

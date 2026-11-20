@@ -13,6 +13,9 @@ TOKEN_MARGIN = 20
 MAX_LENGTH = 448  # most tokens Whisper takes in one window: prompt plus output
 MAX_PROMPT = 227  # longest prompt faster-whisper makes: 223 text tokens plus 4 control tokens
 MAX_NEW_TOKENS = MAX_LENGTH - MAX_PROMPT
+TEMPERATURES = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)  # a decode that fails the checks below is done again hotter
+COMPRESSION_RATIO_THRESHOLD = 2.4
+LOG_PROB_THRESHOLD = -1.0
 
 
 class FasterWhisper:
@@ -28,7 +31,9 @@ class FasterWhisper:
             vad_filter=True,
             initial_prompt=prompt,
             word_timestamps=True,
-            temperature=0.0,
+            temperature=TEMPERATURES,
+            compression_ratio_threshold=COMPRESSION_RATIO_THRESHOLD,
+            log_prob_threshold=LOG_PROB_THRESHOLD,
             max_new_tokens=min(int(len(audio) / SAMPLE_RATE * TOKENS_PER_SECOND) + TOKEN_MARGIN, MAX_NEW_TOKENS),
         )
         return [
