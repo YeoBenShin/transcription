@@ -20,7 +20,7 @@ The session folder is the only link between the child processes.
 ```
 out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
   system/000001-20261118T140000.000-48000x2.pcm   run file: sequence, wall time of first sample, rate x channels
-  system/000002-...pcm                      next recorder run (after a crash or --session)
+  system/000002-...pcm                      next recorder run (after a recorder restart or --session)
   mic/000001-...pcm                         with --mic: run files of the microphone
   transcript.system.partial.jsonl           progress per stream, source of truth for the transcript
   transcript.mic.partial.jsonl
@@ -33,7 +33,7 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 
 | File | Role |
 |---|---|
-| `cli.py` | `start` (spawn one recorder per stream and the transcriber, handle Ctrl+C, restart a failed transcriber, then finalize), `finalize`, `devices`. |
+| `cli.py` | `start` (spawn one recorder per stream and the transcriber, restart a child that exits, handle Ctrl+C, then finalize), `finalize`, `devices`. `Child`: one child process and its restart rules, the same for recorders and the transcriber. |
 | `recorder.py` | One stream (`--stream system` or `mic`). Source: an input device (sounddevice, `--device`; for `mic` the default input device if no `--device`), or with `--loopback` the WASAPI loopback of a Windows playback device (pyaudiowpatch). Audio callback puts each block on a queue. Main thread gives blocks to `RunWriter`, which appends each one to the run file (raw float32) and flushes it to the OS. One run file per recorder run. With loopback, `RunWriter` fills the time with no blocks with zeros (see Time). Stops when stdin closes. Logs input overflow and 30 s of silence. |
 | `session.py` | Folder layout, `Stream` (stream folder, progress file, run files), run file names, `Timeline` (run files end to end on one audio time axis, gaps, audio time <-> wall time), pid claims. |
 | `transcriber.py` | Poll loop over all streams. `StreamState` per stream: progress, `Agreement`, timeline. Each loop gives one pass to each stream that is due. Each pass: span from the end of the last closed line, `read_16k`, backend, `vad.speech_end`, `Agreement.step` decides which words to write and where lines close, append to progress. Then `Layout` puts the lines of all streams on one time axis: rewrite `<name>.txt`, print lines that closed, show the open line and the tail as the draft line. |
@@ -91,7 +91,7 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 - An OS mix (Aggregate Device on macOS, VoiceMeeter on Windows) needs no code, but gives no label per speaker, and speech of 2 people at the same time gets to Whisper as one signal.
 - A mix of the 2 streams before Whisper has the same problems, and also needs the 2 device clocks aligned to the frame.
 - Separate transcription gives the label `Me` / `Them` from the source, and Whisper hears one speaker at a time. Lines must only be in the correct order, so alignment by wall time is sufficient. The drift between 2 device clocks is about 50 ppm (about 0.2 s per hour).
-- One recorder process per stream: if the mic is disconnected, only the mic recorder stops. The parent keeps the other recorders and logs the stop.
+- One recorder process per stream: if one recorder process exits, the other recorders go on.
 - One transcriber process for all streams: one model in memory, and one writer of `<name>.txt`. Two processes would load the model two times and both would write the same `.txt`. A silent mic costs little: the VAD finds no speech and Whisper does not decode.
 - No echo removal. With speakers, the mic also records the others, so their lines show two times. `start --mic` shows a warning to use headphones. For the speakers case, `--mic-only` records the mic as the only stream: the mic hears all people, and each line shows one time.
 - Mute in the meeting app does not mute the OS microphone, so the mic stream records speech during mute. The warning says this.
@@ -108,12 +108,20 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 - Consecutive run files with the same rate are resampled together in `read_16k`, so there is no filter edge at the join.
 
 ### Two processes, linked only by the folder
-- A crash or hang in Whisper does not stop the recording. The parent restarts a failed transcriber up to 3 times; it resumes from the progress file.
-- Children start in their own process group, so Ctrl+C reaches only the parent. The parent controls the stop order: recorder first (so the last blocks are on disk), then the `stopped` marker, then the transcriber finishes.
-- A child stops when its stdin closes. If the parent dies, the pipe closes, so no orphan recorder keeps recording. The stdin thread reads the raw file descriptor: a daemon thread that blocks in `sys.stdin.buffer` holds a lock and makes Python abort at exit.
-- The parent sets its own SIGINT handler (and treats SIGTERM as Ctrl+C). A process started in the background by a shell can inherit SIGINT as ignored.
-- `stopped` is written by the parent after the recorder exits, and the transcriber reads it before it lists the run files. Thus when it sees `stopped`, the listing has all audio.
-- Pid files stop a second recorder or transcriber on the same session. A pid file of a dead process is ignored.
+- A crash in Whisper does not stop the recording. The parent restarts the transcriber (see below); it resumes from the progress file.
+
+### Restart of a child (`cli.Child`)
+- Recorders and the transcriber use the same class and the same rules. Only the measure of work is different: a recorder makes run files (count of run files of its stream); the transcriber appends progress records (bytes after the header line, all progress files).
+- During the recording, any exit of a child is a failure. A recorder exits normally only when its stdin closes. The transcriber exits with 0 only after `stopped` and all audio done, which comes after the recording. Thus no exit code is checked.
+- A child that exits is started again after 2 s. A new recorder run makes a new run file, so the time between the 2 runs is a recording gap, the same as for `start --session`. A new transcriber resumes from the progress files.
+- No restart if the child did no work since its first start (no device with that name, a second recorder on the session, a model that does not load). The same error comes at each try, so it stops at once.
+- The header line is not work. The transcriber writes it when it makes a progress file, before the model loads (at the first pass). With the full file size, a bad `--model` was restarted 3 times.
+- After 3 restarts in a row with no work, the child stays stopped. A restart that does work resets the count. A total limit (the transcriber had 3 per session before) is wrong for a recorder: audio that is not recorded is lost, and a 3 h call with a crash each hour would stop on the 4th crash. The live transcript has the same problem in long calls. For the transcriber, `finalize` can still do the audio later.
+- The restart is for a failure of the process (crash, kill), not for a failure of the input device. A new process sees the device list again, but the restart does not try to detect or follow a device change.
+- In a test on macOS (a temporary aggregate device as the recorder device, then destroyed during the recording), the recorder did not exit: CoreAudio sent the stream audio from another input, with no error and no status flag. Thus a disconnected device does not cause a restart on macOS.
+- The 2 s wait is in the poll loop of the parent, not a sleep, so the parent still watches the other children. Ctrl+C during the wait cancels a recorder restart. A transcriber restart that waits starts at once, because the transcriber must still do the audio that is left.
+- Ctrl+C does not change: it goes only to the parent (the children are in their own process group). The parent closes the stdin of the process of each child that runs now, the restarted one too.
+- Verified end to end with `start --device BlackHole` and speech: `kill -9` of the recorder (restart, `(recording gap 00:00:02)`, finalize merged 2 run files); `kill -9` of the transcriber (restart, transcript complete); Ctrl+C in the 2 s wait of each; bad `--device` and bad `--model` (no restart).
 
 ### Raw PCM run files, no FLAC snippets
 - The first version wrote 5 s FLAC snippets. The transcriber saw audio only after a snippet closed, so each line waited up to 5 s more.

@@ -69,7 +69,7 @@ Use this instead of `winget configure` when Python 3.13 is already installed, or
 ```
 
 - `tests/test_output_files.py`: output file name, header line, name conflicts (`<name>-<id>.txt`), and `temp/` cleanup. Uses a fake source through `pipeline.run`. No network, no Whisper.
-- `tests/test_live.py`: live run file writing, gaps, commit rules, transcriber resume, merge and finalize. Fake backend, no audio device, no Whisper.
+- `tests/test_live.py`: live run file writing, gaps, restart of recorders and transcriber, commit rules, transcriber resume, merge and finalize. Fake backend, no audio device, no Whisper.
 - `tests/test_temp_files.py`: which files in `temp/` belong to one `<name>` (used by the web Delete button).
 
 Live benchmark (default check of live accuracy and speed, about 2 min, not in the default run):
@@ -281,6 +281,7 @@ Windows:
 
 - The terminal shows each transcript line as it is written: `[00:01:23] text`. The last line is the draft of the sentence that is still spoken. It changes about each second. Plain words in it are final; dim words can still change. It becomes a fixed line when the sentence is complete (about 2-3 s after its last word). Only fixed lines go into the `.txt`.
 - `--session <folder>` continues a session that is not finalized (for example after a crash). The transcript shows the missing time as `(recording gap HH:MM:SS)`.
+- If a recorder or the transcriber stops during the recording (`live: system recorder stopped by itself ...; restart in 2 s`), it starts again after 2 s. A recorder restart shows in the transcript as a recording gap. A process that fails at its first start, or 3 times in a row with no work, stays stopped. A disconnected input device does not stop the recorder on macOS.
 - `--backend` selects the speech-to-text backend. Only `faster-whisper` now.
 
 ### Stop and finalize

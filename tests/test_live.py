@@ -302,6 +302,141 @@ def test_start_passes_sources_to_recorders():
     assert sources(mic_only=True, mic="USB") == {"mic": ["--device", "USB"]}
 
 
+class FakeChildProcess:
+    """A child process: adds `work` to the shared progress count at start, exits when the test sets `code`."""
+
+    def __init__(self, counter: dict, work: int):
+        self.code = None
+        self.stdin = types.SimpleNamespace(closed=False)
+        self.stdin.close = lambda: setattr(self.stdin, "closed", True)
+        counter["progress"] += work
+
+    def poll(self):
+        return self.code
+
+
+@pytest.fixture
+def fake_children(monkeypatch):
+    """Patch live.cli.spawn. Each start takes the next amount of work from the returned list.
+    Returns (plan, started, make), where make() is a Child with a progress count that the starts grow."""
+    from live import cli
+
+    plan, started, counter = [], [], {"progress": 0}
+
+    def spawn(module, args):
+        started.append(FakeChildProcess(counter, plan.pop(0)))
+        return started[-1]
+
+    monkeypatch.setattr(cli, "spawn", spawn)
+    return plan, started, lambda: cli.Child("test child", "live.test", [], lambda: counter["progress"])
+
+
+def test_child_that_did_work_restarts_after_delay(fake_children):
+    from live.cli import CHILD_RESTART_DELAY
+
+    plan, started, make = fake_children
+    plan += [1, 1]
+    child = make()
+    started[0].code = -9
+    assert child.check(100.0)
+    assert len(started) == 1
+    assert child.check(100.0 + CHILD_RESTART_DELAY - 0.1)
+    assert len(started) == 1
+    assert child.check(100.0 + CHILD_RESTART_DELAY)
+    assert len(started) == 2 and child.process is started[1]
+
+
+def test_child_exit_code_0_also_restarts(fake_children):
+    plan, started, make = fake_children
+    plan += [1]
+    child = make()
+    started[0].code = 0
+    assert child.check(0.0) and child.restart_at is not None
+
+
+def test_child_that_fails_at_first_start_is_not_restarted(fake_children):
+    plan, started, make = fake_children
+    plan += [0]
+    child = make()
+    started[0].code = 1
+    assert not child.check(100.0)
+
+
+def test_child_stops_after_restarts_in_a_row_with_no_progress(fake_children):
+    from live.cli import CHILD_RESTARTS
+
+    plan, started, make = fake_children
+    plan += [1] + [0] * CHILD_RESTARTS
+    child = make()
+    now = 0.0
+    for _ in range(CHILD_RESTARTS):
+        child.process.code = 1
+        assert child.check(now)
+        now += 10.0
+        assert child.check(now)
+    child.process.code = 1
+    assert not child.check(now)
+    assert len(started) == 1 + CHILD_RESTARTS
+
+
+def test_child_restart_with_progress_resets_the_count(fake_children):
+    from live.cli import CHILD_RESTARTS
+
+    plan, started, make = fake_children
+    plan += [1, 0, 1] + [0] * CHILD_RESTARTS
+    child = make()
+    now = 0.0
+    for _ in range(2 + CHILD_RESTARTS):
+        child.process.code = 1
+        assert child.check(now)
+        now += 10.0
+        child.check(now)
+    child.process.code = 1
+    assert not child.check(now)
+
+
+def test_child_stop_closes_stdin_and_cancels_restart(fake_children):
+    from live.cli import CHILD_RESTART_DELAY
+
+    plan, started, make = fake_children
+    plan += [1, 1]
+    child = make()
+    child.stop()
+    assert started[0].stdin.closed
+    started[0].code = 0
+    assert child.check(0.0) and child.restart_at == CHILD_RESTART_DELAY
+    child.stop()
+    assert child.restart_at is None
+    assert len(started) == 1
+
+
+def test_child_start_planned_starts_without_wait(fake_children):
+    plan, started, make = fake_children
+    plan += [1, 1]
+    child = make()
+    child.start_planned()
+    assert len(started) == 1
+    started[0].code = 1
+    child.check(0.0)
+    child.start_planned()
+    assert len(started) == 2 and child.restart_at is None
+
+
+def test_recorder_progress_is_run_files_and_transcriber_progress_is_progress_bytes(session, system):
+    from live.cli import transcript_progress
+
+    assert transcript_progress(session) == 0
+    progress = Progress(system.partial, {"model": "tiny"})
+    assert transcript_progress(session) == 0
+    record = '{"start": 0, "end": 1, "text": "a"}\n'
+    progress.handle.write(record)
+    progress.handle.flush()
+    assert transcript_progress(session) == len(record)
+    assert len(system.run_paths()) == 0
+    RunWriter(system, rate=1000, channels=1).add(np.zeros((10, 1), np.float32), arrived=T0.timestamp())
+    assert len(system.run_paths()) == 1
+
+
 def test_mic_only_refuses_system_options():
     from live.cli import main
 
