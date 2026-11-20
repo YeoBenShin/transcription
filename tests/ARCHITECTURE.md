@@ -24,10 +24,11 @@
 | transcriber loop (`run`) | stopped session done to the end; 2 live passes write agreed sentences, then continue; no new pass before 1 s of new audio; resume after a cut-short progress line; pass stops at a gap; prompt not used across a gap; gap line in `.txt` |
 | audio and finalize | exact merge; other rate and channels; merge in blocks with resampling equals one-piece resampling; `read_16k` across run files; finalize writes `.txt` and `.flac` and removes work files; failed merge check keeps everything; finalize after merge only cleans up |
 
+- `test_faster_whisper.py` runs the real `FasterWhisper` backend with the `tiny` model on `fixtures/speech_22s.flac` (macOS `say` speech, 16 kHz mono) and a prompt over 223 tokens. It checks the token cap stays inside the 448-token Whisper limit.
 - `test_temp_files.py` tests `temp_files.work_files` and `temp_files.name_from_log` on files in `tmp_path`. These find the work files that the web Delete button removes.
 
 ## Decisions
 
 - Tests go through `pipeline.run`, not `write_full` alone. Thus they cover the same write and cleanup steps as a real run.
 - The fake source has no network and no Whisper, so the tests run in under 1 s and give the same result offline.
-- `test_live.py` does not open an audio device or load Whisper. The WASAPI loopback stream uses a fake `pyaudiowpatch` module. The recorder stream and the faster-whisper backend are checked end to end by hand: play speech into BlackHole 2ch and run `python -m live start` (macOS), or play speech and run `python -m live start --loopback` (Windows).
+- `test_live.py` does not open an audio device or load Whisper. `test_faster_whisper.py` loads the `tiny` model (download on first run) because the 448-token limit is in faster-whisper and a fake backend cannot show it. The WASAPI loopback stream uses a fake `pyaudiowpatch` module. The recorder stream and the faster-whisper backend are checked end to end by hand: play speech into BlackHole 2ch and run `python -m live start` (macOS), or play speech and run `python -m live start --loopback` (Windows).
