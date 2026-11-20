@@ -62,7 +62,10 @@ def open_session(args) -> Session:
 
 def recorder_sources(args) -> dict:
     """Recorder arguments per stream. system: an input device, or a loopback of a playback device.
-    mic (with --mic): the named input device, or the default input device."""
+    mic (with --mic or --mic-only): the named input device, or the default input device.
+    With --mic-only, there is no system stream."""
+    if args.mic_only:
+        return {MIC: ["--device", args.mic] if args.mic else []}
     if args.loopback:
         sources = {SYSTEM: ["--loopback"] + (["--device", args.device] if args.device else [])}
     else:
@@ -82,7 +85,7 @@ def start(args) -> int:
     session = open_session(args)
     folder = str(session.folder)
     sources = recorder_sources(args)
-    if MIC in sources:
+    if MIC in sources and SYSTEM in sources:
         log(MIC_WARNING)
     recorders = {
         stream: spawn("live.recorder", [folder, "--stream", stream, *source]) for stream, source in sources.items()
@@ -202,6 +205,12 @@ def main(argv=None) -> int:
         help="also record and transcribe a microphone: the input device whose name contains NAME, or the "
         "default input device. Lines get the label 'Me:' (microphone) or 'Them:' (system audio)",
     )
+    begin.add_argument(
+        "--mic-only",
+        action="store_true",
+        help="record and transcribe only a microphone (the one --mic names, else the default input device), "
+        "no system audio. Lines have no label",
+    )
     begin.add_argument("--label", default="", help="text added to the session folder name")
     begin.add_argument("--outdir", type=Path, default=Path("out"))
     begin.add_argument("--session", type=Path, help="continue this session folder")
@@ -219,4 +228,6 @@ def main(argv=None) -> int:
     listing.set_defaults(handler=devices_command)
 
     args = parser.parse_args(argv)
+    if getattr(args, "mic_only", False) and (args.loopback or args.device):
+        parser.error("--mic-only records no system audio: --device and --loopback do not apply. Use --mic NAME")
     return args.handler(args)

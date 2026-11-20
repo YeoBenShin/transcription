@@ -3,10 +3,10 @@
 ## How it works
 
 ```
-python -m live start [--mic]
+python -m live start [--mic | --mic-only]
    │  (parent: cli.start)
-   ├── spawns: python -m live.recorder <session> --stream system   system audio ──► system/NNNNNN-<wall>-<rate>x<ch>.pcm (appended per block)
-   ├── spawns: python -m live.recorder <session> --stream mic      (with --mic) microphone ──► mic/NNNNNN-...pcm
+   ├── spawns: python -m live.recorder <session> --stream system   system audio (not with --mic-only) ──► system/NNNNNN-<wall>-<rate>x<ch>.pcm (appended per block)
+   ├── spawns: python -m live.recorder <session> --stream mic      (with --mic or --mic-only) microphone ──► mic/NNNNNN-...pcm
    ├── spawns: python -m live.transcriber <session>                polls each stream folder ──► transcript.<stream>.partial.jsonl ──► <name>.txt
    │
    Ctrl+C ─► close the stdin of each recorder ─► each writes the blocks left, exits
@@ -47,7 +47,7 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 
 ### Streams (`Layout`, `audio.write_aligned`)
 
-- A stream is one audio source with its own folder, run files, timeline and progress file. `system` is the audio that the meeting app plays. `mic` (with `--mic`) is the microphone.
+- A stream is one audio source with its own folder, run files, timeline and progress file. `system` is the audio that the meeting app plays. `mic` (with `--mic` or `--mic-only`) is the microphone. With `--mic-only`, `mic` is the only stream, so it is the reference and lines have no label.
 - Each stream is transcribed alone. The commit rules below apply per stream.
 - The reference is the first stream in `STREAMS` order (`system`, then `mic`) that has audio. Its timeline is the time axis of `<name>.txt` and of `<name>.flac`.
 - A time of another stream goes to wall time (wall time of its run file + offset), then to the reference time at that wall time. A wall time in a gap of the reference goes to the start of its next run file.
@@ -93,7 +93,7 @@ out/live/YYYYMMDD-HHMMSS-<label>/          <name> = folder name
 - Separate transcription gives the label `Me` / `Them` from the source, and Whisper hears one speaker at a time. Lines must only be in the correct order, so alignment by wall time is sufficient. The drift between 2 device clocks is about 50 ppm (about 0.2 s per hour).
 - One recorder process per stream: if the mic is disconnected, only the mic recorder stops. The parent keeps the other recorders and logs the stop.
 - One transcriber process for all streams: one model in memory, and one writer of `<name>.txt`. Two processes would load the model two times and both would write the same `.txt`. A silent mic costs little: the VAD finds no speech and Whisper does not decode.
-- No echo removal. With speakers, the mic also records the others, so their lines show two times. `start --mic` shows a warning to use headphones. A mic-only mode is the plan for the speakers case.
+- No echo removal. With speakers, the mic also records the others, so their lines show two times. `start --mic` shows a warning to use headphones. For the speakers case, `--mic-only` records the mic as the only stream: the mic hears all people, and each line shows one time.
 - Mute in the meeting app does not mute the OS microphone, so the mic stream records speech during mute. The warning says this.
 - `<name>.flac` is the mix, so `python -m app` on it gives the full meeting. Each stream is also kept alone (`<name>.<stream>.flac`), because a mix cannot be split again.
 - The stream files are on the reference time axis, not each on its own. Each stream on its own axis starts at its own recorder start and closes up its own gaps. Then the transcripts of the 2 files cannot be lined up after finalize, because the wall times are only in the run file names, and finalize removes the run files. On one axis, the transcripts merge by timestamp. FLAC stores the zeros where a stream has no audio in almost no space.

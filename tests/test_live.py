@@ -289,8 +289,8 @@ def test_start_passes_sources_to_recorders():
 
     from live.cli import recorder_sources
 
-    def sources(loopback=False, device=None, mic=None):
-        return recorder_sources(Namespace(loopback=loopback, device=device, mic=mic))
+    def sources(loopback=False, device=None, mic=None, mic_only=False):
+        return recorder_sources(Namespace(loopback=loopback, device=device, mic=mic, mic_only=mic_only))
 
     assert sources() == {"system": ["--device", "BlackHole"]}
     assert sources(device="Cable") == {"system": ["--device", "Cable"]}
@@ -298,6 +298,16 @@ def test_start_passes_sources_to_recorders():
     assert sources(loopback=True, device="Head") == {"system": ["--loopback", "--device", "Head"]}
     assert sources(mic="") == {"system": ["--device", "BlackHole"], "mic": []}
     assert sources(loopback=True, mic="USB") == {"system": ["--loopback"], "mic": ["--device", "USB"]}
+    assert sources(mic_only=True) == {"mic": []}
+    assert sources(mic_only=True, mic="USB") == {"mic": ["--device", "USB"]}
+
+
+def test_mic_only_refuses_system_options():
+    from live.cli import main
+
+    for extra in (["--device", "BlackHole"], ["--loopback"]):
+        with pytest.raises(SystemExit):
+            main(["start", "--mic-only", *extra])
 
 
 def test_other_files_are_not_run_files(session, system):
